@@ -20,8 +20,11 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   const isFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
   if (url.origin !== location.origin && !isFont) return;
+  // アプリのファイルは毎回GitHubに新しい版がないか確かめる（変わっていなければ通信はわずか）。
+  // ブラウザの一時保存に任せると、更新が届くまで最大10分かかるため
+  const fresh = isFont ? fetch(req) : fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' });
   e.respondWith(
-    fetch(req)
+    fresh
       .then((res) => {
         if (res.ok || res.type === 'opaque') {
           const copy = res.clone();
