@@ -157,6 +157,12 @@ body.has-player main { padding-bottom: 190px; }
 .seek.dragging #progressFill { transition: none; }
 .player-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
 .status { margin: 0; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.player-tools { flex: none; display: flex; align-items: center; gap: 8px; }
+.vol { display: flex; align-items: center; gap: 2px; }
+.vol button { width: 32px; height: 32px; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; }
+.vol svg { width: 20px; height: 20px; }
+.vol input { width: 92px; padding: 0; border: 0; background: transparent; accent-color: var(--accent); cursor: pointer; }
+@media (max-width: 480px) { .vol input { width: 64px; } }
 .rate { flex: none; border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 3px 10px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .controls { display: flex; align-items: center; justify-content: center; gap: clamp(8px, 4vw, 26px); margin-top: 4px; }
 .controls button { width: 48px; height: 48px; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; position: relative; }
@@ -308,7 +314,15 @@ input, select, textarea {
   </div>
   <div class="player-row">
     <p id="playerStatus" class="status"></p>
-    <button type="button" id="rateBtn" class="rate" aria-label="再生速度">1.0×</button>
+    <div class="player-tools">
+      <div id="volBox" class="vol" hidden>
+        <button type="button" id="muteBtn" aria-label="消音">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke="none"/><path id="volWaves" d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
+        </button>
+        <input id="vol" type="range" min="0" max="100" step="1" aria-label="音量">
+      </div>
+      <button type="button" id="rateBtn" class="rate" aria-label="再生速度">1.0×</button>
+    </div>
   </div>
   <div class="controls">
     <button type="button" id="prevBtn" aria-label="前の段落"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2.2v14H6zM19.5 5.6v12.8L9.4 12z"/></svg></button>
@@ -467,7 +481,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -1554,6 +1568,31 @@ function remakeAhead() {
 }
 
 const previewAudio = new Audio();
+
+/* ---------- 音量（Macなど。iPhone・iPadはページから音量を変えられないので、本体のボタンを使う） ---------- */
+const volumeWorks = (() => { try { const a = new Audio(); a.volume = 0.5; return a.volume === 0.5; } catch { return false; } })();
+function applyVolume() {
+  for (const el of [audio, previewAudio]) { el.volume = settings.volume; el.muted = settings.muted; }
+  const off = settings.muted || settings.volume === 0;
+  $('#vol').value = String(Math.round(settings.volume * 100));
+  $('#volWaves').setAttribute('d', off ? 'M16 9.5l5 5M21 9.5l-5 5' : settings.volume < 0.5 ? 'M15.5 9a4 4 0 0 1 0 6' : 'M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11');
+  $('#muteBtn').setAttribute('aria-label', settings.muted ? '消音を解除' : '消音');
+}
+$('#volBox').hidden = !volumeWorks;
+$('#vol').addEventListener('input', (e) => {
+  settings.volume = Number(e.target.value) / 100;
+  if (settings.volume > 0) settings.muted = false;
+  applyVolume();
+  saveSettings();
+});
+$('#muteBtn').addEventListener('click', () => {
+  // 音量0のまま消音を解除したときは、聞こえる大きさに戻す
+  if (settings.muted || settings.volume === 0) { settings.muted = false; if (settings.volume === 0) settings.volume = 0.5; }
+  else settings.muted = true;
+  applyVolume();
+  saveSettings();
+});
+if (volumeWorks) applyVolume();
 $('#previewBtn').addEventListener('click', async () => {
   const btn = $('#previewBtn');
   unlock(previewAudio);
