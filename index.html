@@ -395,10 +395,14 @@ const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
 const SPEAKABLE = /[\p{L}\p{N}]/u;
-// 最初の2回はすぐ鳴らせるよう短くし、その後は段落をまとめて自然な抑揚を保つ。
-// Geminiは無料だと1日の回数に上限があるので、大きめにまとめて回数を減らす
-const FIRST = [80, 250];
-const CHUNK = { xai: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } };
+// 1回に送る量。最初の数回はすぐ鳴らせるよう短くし、その後は段落をまとめて自然な抑揚を保つ。
+// 版2はGeminiの1日の回数を節約するため大きくまとめる（1回の音声の上限は約10分なので、1,800字までに抑える）。
+// 区切り方が変わると保存済みの音声を使い回せないので、読み上げごとにどの版で区切ったかを覚えておく
+const CHUNKING = {
+  1: { first: [80, 250], xai: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } },
+  2: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 1500, max: 1800 } },
+};
+const CHUNK_VERSION = { xai: 1, gemini: 2 };
 const AHEAD = 3, PARALLEL = 2;
 const CHARS_PER_MIN = 330;
 const RATES = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
@@ -532,7 +536,7 @@ async function cacheSize() {
 class TtsError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 声の組み合わせ（サービス・声・雰囲気）。同じ文章でも組み合わせが違えば別の音声になる
-const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: settings.engine === 'gemini' ? settings.geminiStyle.trim() : '' });
+const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: settings.engine === 'gemini' ? settings.geminiStyle.trim() : '', chunk: CHUNK_VERSION[settings.engine] });
 const keyFor = (text, p = curProfile()) => hash(`${p.engine}|${p.voice}|${p.style}|ja|${text}`);
 const keyOf = (engine) => (engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 
@@ -667,12 +671,12 @@ function splitLong(s, max) {
   if (rest) out.push(rest);
   return out;
 }
-function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict } = {}) {
+function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict, chunk = CHUNK_VERSION[engine] } = {}) {
   const dict = dictEntries(dictText);
   const chunks = [];
   let cur = null, pending = [];
-  const { target, max } = CHUNK[engine];
-  const limit = () => FIRST[chunks.length] ?? target;
+  const { first } = CHUNKING[chunk], { target, max } = CHUNKING[chunk][engine];
+  const limit = () => first[chunks.length] ?? target;
   const flush = () => { if (cur) { chunks.push(cur); cur = null; } };
   const add = (sp, dp, pid) => {
     if (!cur) { cur = { speech: '', display: pending, pid: -1 }; pending = []; }
@@ -688,7 +692,13 @@ function chunkText(raw, { engine = settings.engine, dict: dictText = settings.di
     const sp = units.map((u) => u.sp).join('');
     const dp = units.map((u) => u.dp).join('');
     if (!SPEAKABLE.test(sp)) {
-      // 「＊＊＊」のような区切り行は読まずに、段落の切れ目として使う
+      // 「＊＊＊」のような区切り行は読まない。版1は送る単位の切れ目にし、版2は回数を増やさないよう長い間に置き換える
+      if (chunk >= 2 && cur) {
+        if (dp.trim()) cur.display.push(dp);
+        cur.speech += '\n[long-pause]';
+        cur.pid = -1;
+        return;
+      }
       if (dp.trim()) (cur ? cur.display : chunks.length ? chunks[chunks.length - 1].display : pending).push(dp);
       flush();
       return;
@@ -901,7 +911,7 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   R.profile = doc ? doc.profile : curProfile();
   R.dict = doc ? doc.dict : settings.dict;
   R.doc = null;
-  R.chunks = chunkText(text, { engine: R.profile.engine, dict: R.dict });
+  R.chunks = chunkText(text, { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1 });
   if (!R.chunks.length) { showNotice('読み上げる文章がありません。'); return; }
   R.prefix = [];
   R.total = 0;
@@ -1105,7 +1115,19 @@ if ('mediaSession' in navigator) {
   for (const [action, fn] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} }
 }
 
-$('#startBtn').addEventListener('click', () => {
+// 同じ文章を同じ声で読んだ履歴があれば、その時の区切り方で読む（保存済みの音声を使い回すため）
+async function findDoc(text) {
+  const { engine, voice, style } = curProfile();
+  for (const chunk of [CHUNK_VERSION[engine], 1]) {
+    const profile = chunk === 1 ? { engine, voice, style } : { engine, voice, style, chunk };
+    for (const p of chunk === 1 ? [profile, { ...profile, chunk: 1 }] : [profile]) {
+      const doc = await docGet(hash(JSON.stringify([text, p, settings.dict])));
+      if (doc) return doc;
+    }
+  }
+  return null;
+}
+$('#startBtn').addEventListener('click', async () => {
   const text = textEl.value;
   if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
   if (R.chunks.length && hash(text + '\u0000' + settings.dict) === R.sig) {
@@ -1114,13 +1136,16 @@ $('#startBtn').addEventListener('click', () => {
     return;
   }
   hideNotice();
-  startReading(text);
+  unlock(audio);
+  startReading(text, 0, 0, await findDoc(text));
 });
-$('#resumeBtn').addEventListener('click', () => {
+$('#resumeBtn').addEventListener('click', async () => {
   const pos = store.get('pos', null);
   if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
   hideNotice();
-  startReading(textEl.value, pos ? pos.i : 0, pos ? pos.t : 0);
+  unlock(audio);
+  const text = textEl.value;
+  startReading(text, pos ? pos.i : 0, pos ? pos.t : 0, await findDoc(text));
 });
 $('#editBtn').addEventListener('click', () => showView('edit'));
 
@@ -1258,7 +1283,11 @@ function remakeAhead() {
   if (!R.ctrl) return;
   R.ctrl.abort();
   R.ctrl = new AbortController();
-  R.profile = curProfile();
+  // 区切り方はこの読み上げを始めたときのまま。サービスを変えた場合は、どちらの大きさで区切ったかも残す
+  const prev = R.profile;
+  R.profile = { ...curProfile(), chunk: prev.chunk };
+  const by = prev.chunkBy || prev.engine;
+  if (by !== R.profile.engine) R.profile.chunkBy = by;
   rememberDoc();
   const keep = audio.currentSrc === R.urls.get(R.idx) ? R.idx : -1;
   for (const [i, u] of R.urls) if (i !== keep) { URL.revokeObjectURL(u); R.urls.delete(i); markChunk(i, ''); }
@@ -1307,7 +1336,7 @@ async function renderHistory() {
     const open = make('button', 'hist-open');
     open.type = 'button';
     const state = make('span', 'hist-meta');
-    if (playing) state.append(make('b', null, '再生中'), ' ・ ');
+    if (playing) state.append(make('b', null, R.wantPlay ? '再生中' : '開いている'), ' ・ ');
     state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ 音声 ${saved}/${d.n}段落 保存済み`);
     const bar = make('span', 'meter');
     const fill = make('span');
@@ -1473,7 +1502,9 @@ async function runExport() {
   } catch (e) {
     ctrl.abort();
     if (e.name === 'AbortError') return;
-    $('#expMsg').textContent = e.message;
+    $('#expMsg').textContent = e.kind === 'quota'
+      ? `${e.message}ここまでに作った${fmtNum(done)}段落は保存済みです。回復したら、もう一度「書き出す」を押すと残りだけを作ります。`
+      : e.message;
     $('#expMsg').hidden = false;
     $('#expStart').disabled = false;
     return;
