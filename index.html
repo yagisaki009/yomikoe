@@ -93,6 +93,7 @@ body.has-player main { padding-bottom: 190px; }
   position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg);
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding-block: 8px;
 }
+.head-actions { display: flex; gap: 6px; }
 .read-head h1 { margin: 0; font-size: 14px; font-weight: 500; color: var(--muted); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chunks { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .chunk {
@@ -101,6 +102,8 @@ body.has-player main { padding-bottom: 190px; }
   font: 500 18px/2 var(--f-read); transition: background-color .35s, color .35s;
 }
 .chunk p { margin: 0; overflow-wrap: anywhere; }
+.chunk p.ep-title { font-weight: 700; }
+.chunk p.ep-title::before { content: attr(data-ep); display: block; font: 700 12px/1.6 var(--f-ui); letter-spacing: .12em; color: var(--accent); }
 .chunk.read { color: var(--muted); }
 .chunk.now { background: var(--now); color: var(--ink); }
 .chunk[data-state="error"] { outline: 1px dashed var(--err); outline-offset: -1px; }
@@ -119,6 +122,17 @@ body.has-player main { padding-bottom: 190px; }
 .hist-meta b { color: var(--accent); font-weight: 700; }
 .hist-open .meter { margin-top: 8px; height: 4px; }
 .hist-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
+
+/* 目次 */
+.toc { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.toc li + li { border-top: 1px solid var(--line); }
+.toc button { display: grid; grid-template-columns: 3.4em minmax(0, 1fr); gap: 2px 10px; width: 100%; padding: 12px 4px; border: 0; background: transparent; text-align: left; border-radius: 8px; }
+.toc .no { grid-row: span 2; font: 700 13px/1.9 var(--f-ui); color: var(--muted); font-variant-numeric: tabular-nums; }
+.toc .t { font: 700 16px/1.6 var(--f-read); overflow-wrap: anywhere; }
+.toc .s { font-size: 13px; line-height: 1.55; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.toc li.done .t { color: var(--muted); }
+.toc li.now button { background: var(--now); }
+.toc li.now .no { color: var(--accent); }
 
 /* プレーヤー */
 .player {
@@ -267,7 +281,10 @@ input, select, textarea {
     <div class="read-head">
       <button type="button" id="editBtn" class="btn ghost small">編集</button>
       <h1 id="docTitle"></h1>
-      <button type="button" id="exportBtn" class="btn ghost small">書き出し</button>
+      <div class="head-actions">
+        <button type="button" id="tocBtn" class="btn ghost small" hidden>目次</button>
+        <button type="button" id="exportBtn" class="btn ghost small">書き出し</button>
+      </div>
     </div>
     <ol id="chunkList" class="chunks"></ol>
   </section>
@@ -384,6 +401,16 @@ input, select, textarea {
         <button type="button" id="clearCache" class="btn ghost small">すべて削除</button>
       </div>
     </section>
+  </div>
+</dialog>
+
+<dialog id="tocDlg" aria-labelledby="tocTitle">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2 id="tocTitle">目次</h2>
+      <button type="button" id="tocClose" class="btn ghost small">閉じる</button>
+    </div>
+    <ol id="tocList" class="toc"></ol>
   </div>
 </dialog>
 
@@ -696,7 +723,8 @@ function splitLong(s, max) {
   if (rest) out.push(rest);
   return out;
 }
-function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict, chunk = CHUNK_VERSION[engine] } = {}) {
+function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict, chunk = CHUNK_VERSION[engine], marks = null } = {}) {
+  const found = new Map();
   const dict = dictEntries(dictText);
   const chunks = [];
   let cur = null, pending = [];
@@ -705,6 +733,7 @@ function chunkText(raw, { engine = settings.engine, dict: dictText = settings.di
   const flush = () => { if (cur) { chunks.push(cur); cur = null; } };
   const add = (sp, dp, pid) => {
     if (!cur) { cur = { speech: '', display: pending, pid: -1 }; pending = []; }
+    if (marks?.has(pid) && !found.has(pid)) found.set(pid, { chunk: chunks.length, at: cur.speech.length + (cur.speech ? 1 : 0), para: cur.display.length });
     if (cur.pid === pid) { cur.display[cur.display.length - 1] += dp; cur.speech += sp; }
     else { cur.display.push(dp); cur.speech += (cur.speech ? '\n' : '') + sp; cur.pid = pid; }
   };
@@ -737,7 +766,9 @@ function chunkText(raw, { engine = settings.engine, dict: dictText = settings.di
   });
   flush();
   if (pending.length && chunks.length) chunks[chunks.length - 1].display.push(...pending);
-  return chunks.map((c, i) => ({ i, speech: c.speech, display: c.display, chars: c.speech.length }));
+  const result = chunks.map((c, i) => ({ i, speech: c.speech, display: c.display, chars: c.speech.length }));
+  result.marks = found;
+  return result;
 }
 
 /* ---------- 台本から読む部分を取り出す ---------- */
@@ -753,12 +784,13 @@ const NOTE_HEAD = /^\s*(■|オマージュ|概要欄|【)/;
 const isTitleLine = (t) => t.startsWith('📙') || t.startsWith('💴');
 const cleanTitle = (t) => t.replace(/^[\p{Extended_Pictographic}\uFE0F\u200D\s]+/u, '').replace(/\s+[vV]\d+(\.\d+)?\s*$/, '').trim();
 
-function extractReadable(raw, { afterword = false } = {}) {
+// 話ごとの題名も返す。line は読む部分だけにした文章の中の行、rawLine は元の文章の中の行（どちらも題名の最初の行）
+function parseScript(raw, { afterword = false } = {}) {
   const lines = raw.replace(/\r\n?/g, '\n').split('\n');
   const rules = [];
   lines.forEach((l, i) => { if (RULE_LINE.test(l)) rules.push(i); });
-  if (!rules.length || !lines.some((l) => isTitleLine(l.trim()))) return raw;
-  const out = [];
+  if (!rules.length || !lines.some((l) => isTitleLine(l.trim()))) return { readable: raw, stories: [] };
+  const out = [], stories = [];
   let prevEnd = 0;
   rules.forEach((r, k) => {
     const nextRule = k + 1 < rules.length ? rules[k + 1] : lines.length;
@@ -793,6 +825,7 @@ function extractReadable(raw, { afterword = false } = {}) {
     prevEnd = end;
     if (!body.some((l) => SPEAKABLE.test(l))) return;
     if (out.length) out.push('', '◇', '');
+    if (titles.length) stories.push({ title: titles[0], sub: titles.slice(1).join(' '), line: out.length, rawLine: start });
     out.push(...titles, '', ...body);
     if (!afterword) return;
     // あとがき：本文の後ろ、次の題名までにある「あとがき」の見出しから、次の見出し・区切り線の手前まで
@@ -808,8 +841,9 @@ function extractReadable(raw, { afterword = false } = {}) {
       break;
     }
   });
-  return out.length ? out.join('\n') : raw;
+  return out.length ? { readable: out.join('\n'), stories } : { readable: raw, stories: [] };
 }
+const extractReadable = (raw, opts) => parseScript(raw, opts).readable;
 // 今の設定で、この文章のどこを読むか。普通の文章（台本でない）なら null
 function readFilterFor(text) {
   if (!settings.scriptOnly) return null;
@@ -909,7 +943,7 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------- 再生 ---------- */
 const audio = $('#audio');
-const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null };
+const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, episodes: [], curEp: -1 };
 let silentUrl = null;
 
 function silentWav(ms = 200, rate = 8000) {
@@ -939,6 +973,10 @@ function renderChunks() {
     frag.append(li);
   }
   list.append(frag);
+  R.episodes.forEach((ep, k) => {
+    const p = list.children[ep.chunk]?.children[ep.para];
+    if (p) { p.classList.add('ep-title'); p.dataset.ep = `第${k + 1}話`; }
+  });
 }
 $('#chunkList').addEventListener('click', (e) => {
   const li = e.target.closest('.chunk');
@@ -969,9 +1007,16 @@ function setWaiting(on) {
   if (on) $('#playerStatus').textContent = '音声を作っています…';
   renderPlay();
 }
+function episodeAt(done) {
+  let k = -1;
+  // 題名の少し手前（「長い間」のあたり）からは、もう次の話とみなす
+  R.episodes.forEach((ep, j) => { if (done + 2 >= ep.pos) k = j; });
+  return k;
+}
 function statusText(done) {
   const left = Math.max(1, Math.round((R.total - done) / CHARS_PER_MIN / settings.rate));
-  return `${R.idx + 1} / ${R.chunks.length}段落 ・ 残り約${fmtDur(left)}`;
+  const k = episodeAt(done);
+  return `${k >= 0 ? `第${k + 1}話 ・ ` : ''}${R.idx + 1} / ${R.chunks.length}段落 ・ 残り約${fmtDur(left)}`;
 }
 function renderProgress() {
   if (!R.chunks.length || seeking !== null) return;
@@ -979,6 +1024,8 @@ function renderProgress() {
   const frac = playingThis && audio.duration ? audio.currentTime / audio.duration : 0;
   const done = R.finished ? R.total : R.prefix[R.idx] + R.chunks[R.idx].chars * frac;
   showSeekAt(done / R.total);
+  const k = episodeAt(done);
+  if (k !== R.curEp) { R.curEp = k; updateMedia(); }
   if (!R.waiting) $('#playerStatus').textContent = R.finished ? '最後まで読み上げました' : statusText(done);
 }
 
@@ -1008,18 +1055,21 @@ function previewSeek(frac) {
   const mins = Math.round(frac * R.total / CHARS_PER_MIN / settings.rate);
   $('#playerStatus').textContent = `${i + 1} / ${R.chunks.length}段落へ ・ 約${fmtDur(mins)}の位置`;
 }
-function seekTo(frac) {
-  if (!R.chunks.length) return;
-  const { i, within } = seekTarget(frac);
+function jumpTo(i, within, play) {
   if (i === R.idx && audio.currentSrc === R.urls.get(i) && audio.duration) {
     audio.currentTime = within * audio.duration;
     R.finished = false;
+    if (play && !R.wantPlay) togglePlay();
     savePos();
     renderProgress();
     return;
   }
-  // 止めているときは止めたまま移る
-  playIndex(i, 0, within, R.wantPlay);
+  playIndex(i, 0, within, play);
+}
+function seekTo(frac) {
+  if (!R.chunks.length) return;
+  const { i, within } = seekTarget(frac);
+  jumpTo(i, within, R.wantPlay); // 止めているときは止めたまま移る
 }
 seekEl.addEventListener('pointerdown', (e) => {
   if (!R.chunks.length || e.button > 0) return;
@@ -1075,7 +1125,8 @@ function updateMedia() {
   if (!('mediaSession' in navigator)) return;
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: R.title || 'よみこえ', artist: `${R.idx + 1} / ${R.chunks.length}段落`, album: 'よみこえ',
+      title: R.episodes[R.curEp] ? `第${R.curEp + 1}話 ${R.episodes[R.curEp].title}` : R.title || 'よみこえ',
+      artist: R.episodes[R.curEp] ? R.title : `${R.idx + 1} / ${R.chunks.length}段落`, album: 'よみこえ',
       artwork: [{ src: new URL('icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' }],
     });
   } catch {}
@@ -1089,11 +1140,19 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   R.dict = doc ? doc.dict : settings.dict;
   R.doc = null;
   R.filter = doc ? doc.filter || null : readFilterFor(text);
-  R.chunks = chunkText(readableOf(text, R.filter), { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1 });
+  // 話の題名の位置。題名と本文だけを読むときは読む文章の中、全文を読むときは元の文章の中で探す
+  const stories = parseScript(text, R.filter || {}).stories.map((st) => ({ ...st, line: R.filter ? st.line : st.rawLine }));
+  R.chunks = chunkText(readableOf(text, R.filter), { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1, marks: new Set(stories.map((st) => st.line)) });
   if (!R.chunks.length) { showNotice('読み上げる文章がありません。'); return; }
   R.prefix = [];
   R.total = 0;
   for (const c of R.chunks) { R.prefix.push(R.total); R.total += c.chars; }
+  R.episodes = stories.flatMap((st) => {
+    const m = R.chunks.marks.get(st.line);
+    return m ? [{ title: st.title, sub: st.sub, chunk: m.chunk, para: m.para, at: m.at, pos: R.prefix[m.chunk] + m.at }] : [];
+  });
+  R.curEp = -1;
+  $('#tocBtn').hidden = R.episodes.length < 2;
   R.ctrl = new AbortController();
   R.textHash = hash(text);
   R.sig = sessionSig(text, R.dict, R.filter);
@@ -1607,6 +1666,38 @@ $('#histList').addEventListener('click', async (e) => {
   hideNotice();
   const pos = doc.pos || {};
   startReading(text, pos.done ? 0 : pos.i || 0, pos.done ? 0 : pos.t || 0, doc);
+});
+
+/* ---------- 目次 ---------- */
+const tocDlg = $('#tocDlg');
+function openToc() {
+  const list = $('#tocList');
+  list.textContent = '';
+  const now = R.curEp;
+  R.episodes.forEach((ep, k) => {
+    const li = make('li', k === now ? 'now' : k < now ? 'done' : '');
+    const b = make('button');
+    b.type = 'button';
+    b.dataset.k = k;
+    b.append(make('span', 'no', `第${k + 1}話`), make('span', 't', ep.title), make('span', 's', k === now ? `再生中${ep.sub ? ' ・ ' + ep.sub : ''}` : ep.sub));
+    li.append(b);
+    list.append(li);
+  });
+  tocDlg.showModal();
+  list.querySelector('li.now')?.scrollIntoView({ block: 'center' });
+}
+$('#tocBtn').addEventListener('click', openToc);
+$('#tocClose').addEventListener('click', () => tocDlg.close());
+tocDlg.addEventListener('click', (e) => { if (e.target === tocDlg) tocDlg.close(); });
+$('#tocList').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-k]');
+  if (!b) return;
+  const ep = R.episodes[+b.dataset.k];
+  tocDlg.close();
+  // 題名の頭が切れないよう、ほんの少し手前から
+  const chars = R.chunks[ep.chunk].chars;
+  jumpTo(ep.chunk, chars ? Math.max(0, ep.at / chars - 0.005) : 0, true);
+  setTimeout(() => setNow(ep.chunk, true), 0);
 });
 
 /* ---------- 書き出し ---------- */
