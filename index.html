@@ -193,6 +193,8 @@ input, select, textarea {
 .meter > div, .meter > span { display: block; height: 100%; width: 0; background: var(--accent); }
 .meter.over > div { background: var(--err); }
 .hint { margin: 0; font-size: 13px; line-height: 1.65; color: var(--muted); }
+.check { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.check input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
 .seg label { position: relative; padding: 8px 6px; border-radius: 9px; text-align: center; font-size: 15px; line-height: 1.35; cursor: pointer; }
 .seg label:has(input:checked) { background: var(--surface); font-weight: 700; box-shadow: 0 1px 3px rgb(0 0 0 / .14); }
@@ -351,6 +353,13 @@ input, select, textarea {
     </section>
 
     <section class="group">
+      <h3>台本の読み方</h3>
+      <label class="check"><input id="scriptOnly" type="checkbox">題名と本文だけを読む</label>
+      <label class="check"><input id="readAfterword" type="checkbox">あとがきは読む</label>
+      <p class="hint">「💴📙の題名」と「───」の区切り線がある台本では、■5行要約・■あとがき・■オマージュ・■概要欄用タイトル（【短】【長】）・アルバムの説明などを飛ばして、題名と本文だけを読みます。区切り線のない普通の文章は、すべて読みます。</p>
+    </section>
+
+    <section class="group">
       <h3>読み方の辞書</h3>
       <textarea id="dict" rows="4" placeholder="怪異=かいい&#10;御手洗=みたらい"></textarea>
       <p class="hint">1行に「書き方=読み方」で登録すると、その読みで発音します。小説の「漢字《かんじ》」形式のルビも読みとして使います。</p>
@@ -419,7 +428,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -575,7 +584,11 @@ function retryDelayMs(body) {
   return m ? parseFloat(m[1]) * 1000 : 0;
 }
 function errorDetail(body) {
-  try { const d = JSON.parse(body); return String(d.error?.message || d.error || d.message || ''); } catch { return body.trimStart().startsWith('<') ? '' : body; }
+  try {
+    let d = JSON.parse(body);
+    if (Array.isArray(d)) d = d[0] || {}; // Gemini は [{ error: … }] の形で返してくる
+    return String(d.error?.message || d.error || d.message || '');
+  } catch { return body.trimStart().startsWith('<') ? '' : body; }
 }
 function base64ToBuffer(b64) {
   const bin = atob(b64), u8 = new Uint8Array(bin.length);
@@ -715,6 +728,87 @@ function chunkText(raw, { engine = settings.engine, dict: dictText = settings.di
   return chunks.map((c, i) => ({ i, speech: c.speech, display: c.display, chars: c.speech.length }));
 }
 
+/* ---------- 台本から読む部分を取り出す ---------- */
+// 朗読自動編集アプリと同じ決まり：💴📙の題名の行と、区切り線「───」から
+// 「（本文 約N字）」の行・「■」の行・次の題名・次の区切り線の手前までを本文として読む。
+// ■5行要約・■あとがき・■概要欄用タイトル・アルバムの説明などは読まない（あとがきは設定で読める）
+const RULE_LINE = /^\s*[─━]{3,}\s*$/;
+const BODY_NOTE = /^\s*[（(]\s*本文[^）)]*[）)]\s*$/;
+const META_LINE = /^\s*[（(]?\s*(元タイトル|要約|語り手|原作|作者|出典|本文字数)/;
+const LIST_LINE = /^\s*[0-9０-９]+\s*[\.．、:：)）]?\s/;
+const AFTERWORD_HEAD = /^\s*■?\s*あとがき/;
+const NOTE_HEAD = /^\s*(■|オマージュ|概要欄|【)/;
+const isTitleLine = (t) => t.startsWith('📙') || t.startsWith('💴');
+const cleanTitle = (t) => t.replace(/^[\p{Extended_Pictographic}\uFE0F\u200D\s]+/u, '').replace(/\s+[vV]\d+(\.\d+)?\s*$/, '').trim();
+
+function extractReadable(raw, { afterword = false } = {}) {
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const rules = [];
+  lines.forEach((l, i) => { if (RULE_LINE.test(l)) rules.push(i); });
+  if (!rules.length || !lines.some((l) => isTitleLine(l.trim()))) return raw;
+  const out = [];
+  let prevEnd = 0;
+  rules.forEach((r, k) => {
+    const nextRule = k + 1 < rules.length ? rules[k + 1] : lines.length;
+    // 題名：前の本文の後ろから区切り線までで、いちばん近い📙（なければ💴）。題名のない区切り線（あとがき等の囲み）は本文ではない
+    let anchor = -1;
+    for (const mark of ['📙', '💴']) {
+      for (let i = prevEnd; i < r; i++) if (lines[i].trim().startsWith(mark)) anchor = i;
+      if (anchor >= 0) break;
+    }
+    if (anchor < 0) return;
+    let start = anchor;
+    for (let j = anchor - 1; j > Math.max(prevEnd - 1, anchor - 4); j--) {
+      const t = lines[j].trim();
+      if (t.startsWith('💴')) { start = j; break; }
+      if (t) break;
+    }
+    const titles = [];
+    for (let j = start; j < r; j++) {
+      const t = lines[j].trim();
+      if (!t) continue;
+      if (t.startsWith('■') || RULE_LINE.test(t)) break;
+      if (META_LINE.test(t) || LIST_LINE.test(t)) continue;
+      const c = cleanTitle(t);
+      if (SPEAKABLE.test(c)) titles.push(c);
+    }
+    let end = nextRule;
+    for (let j = r + 1; j < nextRule; j++) {
+      const t = lines[j].trim();
+      if (BODY_NOTE.test(t) || t.startsWith('■') || isTitleLine(t)) { end = j; break; }
+    }
+    const body = lines.slice(r + 1, end);
+    prevEnd = end;
+    if (!body.some((l) => SPEAKABLE.test(l))) return;
+    if (out.length) out.push('', '◇', '');
+    out.push(...titles, '', ...body);
+    if (!afterword) return;
+    // あとがき：本文の後ろ、次の題名までにある「あとがき」の見出しから、次の見出し・区切り線の手前まで
+    for (let j = end; j < lines.length && !isTitleLine(lines[j].trim()); j++) {
+      if (!AFTERWORD_HEAD.test(lines[j])) continue;
+      const after = [];
+      for (let m = j + 1; m < lines.length; m++) {
+        const t = lines[m].trim();
+        if (RULE_LINE.test(t) || NOTE_HEAD.test(t) || isTitleLine(t) || BODY_NOTE.test(t)) break;
+        after.push(lines[m]);
+      }
+      if (after.some((l) => SPEAKABLE.test(l))) out.push('', 'あとがき', ...after);
+      break;
+    }
+  });
+  return out.length ? out.join('\n') : raw;
+}
+// 今の設定で、この文章のどこを読むか。普通の文章（台本でない）なら null
+function readFilterFor(text) {
+  if (!settings.scriptOnly) return null;
+  const filter = { afterword: settings.readAfterword };
+  return extractReadable(text, filter) === text ? null : filter;
+}
+const readableOf = (text, filter) => (filter ? extractReadable(text, filter) : text);
+// 履歴の見分け方。台本の読み方を指定しないとき（普通の文章）は、以前の版と同じ見分け方になる
+const docIdOf = (text, profile, dict, filter) => hash(JSON.stringify(filter ? [text, profile, dict, filter] : [text, profile, dict]));
+const sessionSig = (text, dict, filter) => hash(text + '\u0000' + dict + '\u0000' + JSON.stringify(filter));
+
 /* ---------- 画面 ---------- */
 let lastView = 'edit';
 function showView(name) {
@@ -739,7 +833,9 @@ let estTimer;
 function scheduleEstimate() { clearTimeout(estTimer); estTimer = setTimeout(renderEstimate, 350); }
 async function renderEstimate() {
   const text = $('#text').value;
-  const chunks = chunkText(text);
+  const filter = readFilterFor(text);
+  const readable = readableOf(text, filter);
+  const chunks = chunkText(readable);
   const total = chunks.reduce((a, c) => a + c.chars, 0);
   const pos = store.get('pos', null);
   const resumable = pos && pos.h === hash(text) && (pos.i > 0 || pos.t > 5);
@@ -755,7 +851,8 @@ async function renderEstimate() {
   const yen = extraYen(fresh);
   const mins = Math.max(1, Math.round(total / CHARS_PER_MIN / settings.rate));
   const note = settings.engine === 'gemini' && fresh ? '（無料枠）' : fresh < total ? '（作成済みの部分は無料）' : '';
-  $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ 料金の目安 <b>${fmtYen(yen)}</b>${note}<br>${used}`;
+  const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
+  $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ 料金の目安 <b>${fmtYen(yen)}</b>${note}${skipped}<br>${used}`;
 }
 
 const textEl = $('#text');
@@ -800,7 +897,7 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------- 再生 ---------- */
 const audio = $('#audio');
-const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', doc: null };
+const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null };
 let silentUrl = null;
 
 function silentWav(ms = 200, rate = 8000) {
@@ -880,11 +977,11 @@ function savePos() {
 }
 // 履歴に残す。文章と声の組み合わせごとに1件で、前回の続きの位置も引き継ぐ
 async function rememberDoc() {
-  const ctrl = R.ctrl, id = hash(JSON.stringify([R.text, R.profile, R.dict])), now = Date.now();
+  const ctrl = R.ctrl, id = docIdOf(R.text, R.profile, R.dict, R.filter), now = Date.now();
   const old = await docGet(id);
   if (ctrl !== R.ctrl) return;
   R.doc = {
-    id, title: old?.title || R.title, profile: R.profile, dict: R.dict, chars: R.total, n: R.chunks.length,
+    id, title: old?.title || R.title, profile: R.profile, dict: R.dict, filter: R.filter, chars: R.total, n: R.chunks.length,
     keys: R.chunks.map((c) => keyFor(c.speech, R.profile)),
     createdAt: old?.createdAt || now, updatedAt: now, pos: { i: R.idx, t: 0, done: false },
   };
@@ -911,15 +1008,18 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   R.profile = doc ? doc.profile : curProfile();
   R.dict = doc ? doc.dict : settings.dict;
   R.doc = null;
-  R.chunks = chunkText(text, { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1 });
+  R.filter = doc ? doc.filter || null : readFilterFor(text);
+  R.chunks = chunkText(readableOf(text, R.filter), { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1 });
   if (!R.chunks.length) { showNotice('読み上げる文章がありません。'); return; }
   R.prefix = [];
   R.total = 0;
   for (const c of R.chunks) { R.prefix.push(R.total); R.total += c.chars; }
   R.ctrl = new AbortController();
   R.textHash = hash(text);
-  R.sig = hash(text + '\u0000' + R.dict);
-  R.title = doc?.title || (R.chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
+  R.sig = sessionSig(text, R.dict, R.filter);
+  // 台本は、いちばん上の行（アルバム名や作品名）を名前にする
+  const firstLine = R.filter ? cleanTitle(text.split('\n').find((l) => SPEAKABLE.test(l)) || '') : '';
+  R.title = doc?.title || (firstLine || R.chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
   R.finished = false;
   $('#docTitle').textContent = R.title;
   renderChunks();
@@ -1121,7 +1221,7 @@ async function findDoc(text) {
   for (const chunk of [CHUNK_VERSION[engine], 1]) {
     const profile = chunk === 1 ? { engine, voice, style } : { engine, voice, style, chunk };
     for (const p of chunk === 1 ? [profile, { ...profile, chunk: 1 }] : [profile]) {
-      const doc = await docGet(hash(JSON.stringify([text, p, settings.dict])));
+      const doc = await docGet(docIdOf(text, p, settings.dict, readFilterFor(text)));
       if (doc) return doc;
     }
   }
@@ -1130,7 +1230,7 @@ async function findDoc(text) {
 $('#startBtn').addEventListener('click', async () => {
   const text = textEl.value;
   if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
-  if (R.chunks.length && hash(text + '\u0000' + settings.dict) === R.sig) {
+  if (R.chunks.length && sessionSig(text, settings.dict, readFilterFor(text)) === R.sig) {
     showView('read');
     if (!R.wantPlay) togglePlay();
     return;
@@ -1161,6 +1261,9 @@ function openSettings(msg) {
   $('#fx').value = settings.fx;
   $('#price').value = settings.price;
   $('#dict').value = settings.dict;
+  $('#scriptOnly').checked = settings.scriptOnly;
+  $('#readAfterword').checked = settings.readAfterword;
+  $('#readAfterword').disabled = !settings.scriptOnly;
   renderEngine();
   renderUsage();
   renderCache();
@@ -1223,6 +1326,8 @@ for (const id of ['budget', 'fx', 'price']) {
   });
 }
 $('#dict').addEventListener('input', (e) => { settings.dict = e.target.value; saveSettings(); });
+$('#scriptOnly').addEventListener('change', (e) => { settings.scriptOnly = e.target.checked; $('#readAfterword').disabled = !e.target.checked; saveSettings(); });
+$('#readAfterword').addEventListener('change', (e) => { settings.readAfterword = e.target.checked; saveSettings(); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
   if (!confirm('保存した音声と履歴をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
@@ -1342,7 +1447,7 @@ async function renderHistory() {
     const fill = make('span');
     fill.style.width = `${pos.done ? 100 : Math.round((pos.i || 0) / d.n * 100)}%`;
     bar.append(fill);
-    open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}`), state, bar);
+    open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}${d.filter ? ' ・ 題名と本文のみ' : ''}`), state, bar);
     const actions = make('div', 'hist-actions');
     for (const [act, label] of [['rename', '名前を変える'], ['delete', '削除']]) {
       const b = make('button', 'btn ghost small', label);
