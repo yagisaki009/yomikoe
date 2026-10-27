@@ -64,6 +64,7 @@ a { color: var(--accent); }
 .brand svg { width: 26px; height: 26px; }
 .icon-btn { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; }
 .icon-btn svg { width: 24px; height: 24px; }
+.top-actions { display: flex; gap: 2px; }
 
 main { padding-block: 4px 40px; }
 body.has-player main { padding-bottom: 190px; }
@@ -105,6 +106,19 @@ body.has-player main { padding-bottom: 190px; }
 .chunk[data-state="error"] { outline: 1px dashed var(--err); outline-offset: -1px; }
 .chunk.now[data-state="loading"] { animation: breathe 1.6s ease-in-out infinite; }
 @keyframes breathe { 50% { background-color: transparent; } }
+
+/* 履歴 */
+.hist-note { margin: 2px 0 14px; }
+.hist-empty { margin: 40px 0; text-align: center; color: var(--muted); }
+.hist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.hist-item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.hist-item.current { border-color: var(--accent); }
+.hist-open { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 14px 16px 10px; border: 0; background: transparent; text-align: left; }
+.hist-title { font: 700 17px/1.5 var(--f-read); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.hist-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hist-meta b { color: var(--accent); font-weight: 700; }
+.hist-open .meter { margin-top: 8px; height: 4px; }
+.hist-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
 
 /* プレーヤー */
 .player {
@@ -176,7 +190,7 @@ input, select, textarea {
 .money input { text-align: right; font-variant-numeric: tabular-nums; }
 .usage { margin: 0; font-size: 15px; font-variant-numeric: tabular-nums; }
 .meter { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
-.meter > div { height: 100%; width: 0; background: var(--accent); }
+.meter > div, .meter > span { display: block; height: 100%; width: 0; background: var(--accent); }
 .meter.over > div { background: var(--err); }
 .hint { margin: 0; font-size: 13px; line-height: 1.65; color: var(--muted); }
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
@@ -199,9 +213,14 @@ input, select, textarea {
     <svg viewBox="0 0 26 26" aria-hidden="true"><rect width="26" height="26" rx="7" fill="var(--accent)"/><g fill="var(--accent-ink)"><rect x="4.5" y="10" width="2" height="6" rx="1"/><rect x="8" y="7.5" width="2" height="11" rx="1"/><rect x="11.5" y="5" width="2" height="16" rx="1"/><rect x="15" y="8.5" width="2" height="9" rx="1"/><rect x="18.5" y="7" width="2" height="12" rx="1"/></g></svg>
     <span>よみこえ</span>
   </div>
-  <button id="openSettings" class="icon-btn" aria-label="設定">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h3M13 17h7"/><circle cx="16" cy="7" r="2.6"/><circle cx="10" cy="17" r="2.6"/></svg>
-  </button>
+  <div class="top-actions">
+    <button id="openHistory" class="icon-btn" aria-label="履歴">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.8 12a8.2 8.2 0 1 0 2.4-5.8"/><path d="M3.8 4.6v4.2H8"/><path d="M12 7.6V12l3 1.8"/></svg>
+    </button>
+    <button id="openSettings" class="icon-btn" aria-label="設定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h3M13 17h7"/><circle cx="16" cy="7" r="2.6"/><circle cx="10" cy="17" r="2.6"/></svg>
+    </button>
+  </div>
 </header>
 
 <div id="notice" class="notice" role="status" hidden>
@@ -240,6 +259,17 @@ input, select, textarea {
       <button type="button" id="exportBtn" class="btn ghost small">書き出し</button>
     </div>
     <ol id="chunkList" class="chunks"></ol>
+  </section>
+
+  <section id="historyView" hidden>
+    <div class="read-head">
+      <button type="button" id="histBack" class="btn ghost small">戻る</button>
+      <h1>履歴</h1>
+      <span aria-hidden="true"></span>
+    </div>
+    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても料金はかかりません（保存が1GBを超えると、古い音声から消えます）。</p>
+    <p id="histEmpty" class="hist-empty" hidden>まだ履歴はありません。<br>文章を読み上げると、ここに残ります。</p>
+    <ul id="histList" class="hist"></ul>
   </section>
 </main>
 
@@ -327,7 +357,7 @@ input, select, textarea {
     </section>
 
     <section class="group">
-      <h3>保存した音声</h3>
+      <h3>保存した音声と履歴</h3>
       <div class="field-row">
         <p id="cacheText" class="usage"></p>
         <button type="button" id="clearCache" class="btn ghost small">すべて削除</button>
@@ -427,30 +457,39 @@ let dbPromise = null;
 function openDb() {
   dbPromise ||= new Promise((resolve) => {
     try {
-      const req = indexedDB.open('yomikoe', 1);
-      req.onupgradeneeded = () => req.result.createObjectStore('audio');
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
+      const req = indexedDB.open('yomikoe', 2);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        for (const name of ['audio', 'texts']) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+        if (!db.objectStoreNames.contains('docs')) db.createObjectStore('docs', { keyPath: 'id' });
+      };
+      req.onsuccess = () => { req.result.onversionchange = () => req.result.close(); resolve(req.result); };
+      req.onerror = req.onblocked = () => resolve(null);
     } catch { resolve(null); }
   });
   return dbPromise;
 }
-async function idb(mode, fn) {
+async function idbStore(name, mode, fn) {
   const db = await openDb();
   if (!db) return null;
   return new Promise((resolve) => {
     try {
-      const tx = db.transaction('audio', mode);
-      const req = fn(tx.objectStore('audio'));
+      const tx = db.transaction(name, mode);
+      const req = fn(tx.objectStore(name));
       tx.oncomplete = () => resolve(req ? req.result : null);
       tx.onerror = tx.onabort = () => resolve(null);
     } catch { resolve(null); }
   });
 }
+const idb = (mode, fn) => idbStore('audio', mode, fn);
+const docGet = (id) => idbStore('docs', 'readonly', (s) => s.get(id));
+const docPut = (doc) => idbStore('docs', 'readwrite', (s) => s.put(doc));
+const docAll = async () => ((await idbStore('docs', 'readonly', (s) => s.getAll())) || []).sort((a, b) => b.updatedAt - a.updatedAt);
+const textGet = (id) => idbStore('texts', 'readonly', (s) => s.get(id));
 const cacheGet = (k) => idb('readonly', (s) => s.get(k));
 const cachePut = (k, buf) => idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then(trimCache);
-// Geminiの音声は圧縮されていない（1時間で約170MB）ので、保存量が増えすぎたら古いものから消す
-const CACHE_LIMIT = 600 * 1048576, CACHE_KEEP = 450 * 1048576;
+// Geminiの音声は圧縮されていない（1時間で約170MB）ので、保存量が1GBを超えたら古いものから消す
+const CACHE_LIMIT = 1024 * 1048576, CACHE_KEEP = 800 * 1048576;
 let trimmedAt = 0;
 async function trimCache() {
   if (Date.now() - trimmedAt < 60000) return;
@@ -474,7 +513,7 @@ async function trimCache() {
 }
 const audioType = (buf) => (new Uint8Array(buf, 0, 4).join() === '82,73,70,70' ? 'audio/wav' : 'audio/mpeg');
 const toBlob = (buf) => new Blob([buf], { type: audioType(buf) });
-const cacheClear = () => idb('readwrite', (s) => s.clear());
+const cacheClear = () => Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear())));
 const cacheKeys = async () => new Set((await idb('readonly', (s) => s.getAllKeys())) || []);
 async function cacheSize() {
   const db = await openDb();
@@ -492,7 +531,10 @@ async function cacheSize() {
 /* ---------- 読み上げ（Gemini / xAI） ---------- */
 class TtsError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const keyFor = (text, engine = settings.engine, voice = curVoice()) => hash(`${engine}|${voice}|${engine === 'gemini' ? settings.geminiStyle.trim() : ''}|ja|${text}`);
+// 声の組み合わせ（サービス・声・雰囲気）。同じ文章でも組み合わせが違えば別の音声になる
+const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: settings.engine === 'gemini' ? settings.geminiStyle.trim() : '' });
+const keyFor = (text, p = curProfile()) => hash(`${p.engine}|${p.voice}|${p.style}|ja|${text}`);
+const keyOf = (engine) => (engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 
 function requestXai(text, voice, signal) {
   return fetch(`${API}/tts`, {
@@ -503,9 +545,9 @@ function requestXai(text, voice, signal) {
 }
 // Geminiは表現タグの書き方が違うので置き換え、対応のないもの（ささやき等の囲み）は外して送る
 const GEMINI_TAGS = { pause: '<short pause>', 'long-pause': '<long pause>', breath: '<breath>', inhale: '<breath>', exhale: '<exhales>', sigh: '<sigh>', laugh: '<laugh>', chuckle: '<chuckle>', giggle: '<giggle>', cry: '<cry>', tsk: '<tsk>' };
-function requestGemini(text, voice, signal) {
+function requestGemini(text, voice, style, signal) {
   const part = { type: 'text', text: text.replace(TAG_RE, (t) => GEMINI_TAGS[t.slice(1, -1)] || '') };
-  if (settings.geminiStyle.trim()) part.annotations = [{ type: 'speech_metadata', style: settings.geminiStyle.trim() }];
+  if (style) part.annotations = [{ type: 'speech_metadata', style }];
   return fetch(`${GEMINI_API}/interactions`, {
     method: 'POST', signal,
     headers: { 'x-goog-api-key': settings.geminiKey, 'Content-Type': 'application/json' },
@@ -537,11 +579,11 @@ function base64ToBuffer(b64) {
   return u8.buffer;
 }
 
-async function synth(text, signal) {
-  const engine = settings.engine, voice = curVoice(), key = keyFor(text, engine, voice);
+async function synth(text, signal, p = curProfile()) {
+  const { engine, voice } = p, key = keyFor(text, p);
   const hit = await cacheGet(key);
   if (hit && hit.buf) return toBlob(hit.buf);
-  if (!curKey()) throw new TtsError('nokey', `${ENGINE_NAME[engine]}のAPIキーが入っていません。`);
+  if (!keyOf(engine)) throw new TtsError('nokey', `${ENGINE_NAME[engine]}のAPIキーが入っていません。`);
   const n = text.length;
   if (!overBudgetOk && costYen(usage()) + extraYen(n, engine) > settings.budget) throw new TtsError('budget', `今月の上限（${fmtNum(settings.budget)}円）に達しました。`);
   addUsage(engine, n); // 並行して作っても上限を超えないよう、先に計上しておく
@@ -549,7 +591,7 @@ async function synth(text, signal) {
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
-        res = await (engine === 'gemini' ? requestGemini(text, voice, signal) : requestXai(text, voice, signal));
+        res = await (engine === 'gemini' ? requestGemini(text, voice, p.style, signal) : requestXai(text, voice, signal));
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
@@ -589,8 +631,8 @@ async function synth(text, signal) {
 
 /* ---------- 文章を区切る ---------- */
 const KANJI_RUBY = /[㐀-䶿一-鿿豈-﫿々〆ヶ]+《([^》\n]+)》/g;
-function dictEntries() {
-  return settings.dict.split('\n')
+function dictEntries(dictText) {
+  return dictText.split('\n')
     .map((l) => l.split(/[=＝]/))
     .filter((p) => p.length >= 2 && p[0].trim() && p.slice(1).join('=').trim())
     .map((p) => [p[0].trim(), p.slice(1).join('=').trim()])
@@ -625,11 +667,11 @@ function splitLong(s, max) {
   if (rest) out.push(rest);
   return out;
 }
-function chunkText(raw) {
-  const dict = dictEntries();
+function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict } = {}) {
+  const dict = dictEntries(dictText);
   const chunks = [];
   let cur = null, pending = [];
-  const { target, max } = CHUNK[settings.engine];
+  const { target, max } = CHUNK[engine];
   const limit = () => FIRST[chunks.length] ?? target;
   const flush = () => { if (cur) { chunks.push(cur); cur = null; } };
   const add = (sp, dp, pid) => {
@@ -664,11 +706,14 @@ function chunkText(raw) {
 }
 
 /* ---------- 画面 ---------- */
+let lastView = 'edit';
 function showView(name) {
-  $('#editView').hidden = name !== 'edit';
-  $('#readView').hidden = name !== 'read';
+  for (const v of ['edit', 'read', 'history']) $(`#${v}View`).hidden = v !== name;
+  if (name !== 'history') lastView = name;
   if (name === 'read') setTimeout(() => setNow(R.idx, true), 0);
-  else scheduleEstimate();
+  else if (name === 'edit') scheduleEstimate();
+  else renderHistory();
+  scrollTo(0, 0);
 }
 function showNotice(text, label, fn) {
   $('#noticeText').textContent = text;
@@ -745,7 +790,7 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------- 再生 ---------- */
 const audio = $('#audio');
-const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0 };
+const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', doc: null };
 let silentUrl = null;
 
 function silentWav(ms = 200, rate = 8000) {
@@ -821,6 +866,23 @@ function savePos() {
   const t = audio.currentSrc === R.urls.get(R.idx) ? Math.floor(audio.currentTime) : 0;
   store.set('pos', R.finished ? null : { h: R.textHash, i: R.idx, t });
   R.savedAt = Date.now();
+  if (R.doc) { R.doc.pos = { i: R.idx, t, done: R.finished }; R.doc.updatedAt = Date.now(); docPut(R.doc); }
+}
+// 履歴に残す。文章と声の組み合わせごとに1件で、前回の続きの位置も引き継ぐ
+async function rememberDoc() {
+  const ctrl = R.ctrl, id = hash(JSON.stringify([R.text, R.profile, R.dict])), now = Date.now();
+  const old = await docGet(id);
+  if (ctrl !== R.ctrl) return;
+  R.doc = {
+    id, title: old?.title || R.title, profile: R.profile, dict: R.dict, chars: R.total, n: R.chunks.length,
+    keys: R.chunks.map((c) => keyFor(c.speech, R.profile)),
+    createdAt: old?.createdAt || now, updatedAt: now, pos: { i: R.idx, t: 0, done: false },
+  };
+  R.title = R.doc.title;
+  $('#docTitle').textContent = R.title;
+  await docPut(R.doc);
+  if (!old) await idbStore('texts', 'readwrite', (s) => s.put(R.text, id));
+  navigator.storage?.persist?.().catch(() => {});
 }
 function updateMedia() {
   if (!('mediaSession' in navigator)) return;
@@ -832,18 +894,22 @@ function updateMedia() {
   } catch {}
 }
 
-function startReading(text, from = 0, offset = 0) {
+function startReading(text, from = 0, offset = 0, doc = null) {
   stopAll();
   unlock(audio);
-  R.chunks = chunkText(text);
+  R.text = text;
+  R.profile = doc ? doc.profile : curProfile();
+  R.dict = doc ? doc.dict : settings.dict;
+  R.doc = null;
+  R.chunks = chunkText(text, { engine: R.profile.engine, dict: R.dict });
   if (!R.chunks.length) { showNotice('読み上げる文章がありません。'); return; }
   R.prefix = [];
   R.total = 0;
   for (const c of R.chunks) { R.prefix.push(R.total); R.total += c.chars; }
   R.ctrl = new AbortController();
   R.textHash = hash(text);
-  R.sig = hash(text + '\u0000' + settings.dict);
-  R.title = (R.chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
+  R.sig = hash(text + '\u0000' + R.dict);
+  R.title = doc?.title || (R.chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
   R.finished = false;
   $('#docTitle').textContent = R.title;
   renderChunks();
@@ -851,6 +917,7 @@ function startReading(text, from = 0, offset = 0) {
   document.body.classList.add('has-player');
   showView('read');
   playIndex(Math.min(from, R.chunks.length - 1), offset);
+  rememberDoc();
 }
 function stopAll() {
   R.ctrl?.abort();
@@ -868,7 +935,7 @@ function load(i) {
   if (R.loads.has(i)) return R.loads.get(i);
   const ctrl = R.ctrl;
   if (i !== R.idx) markChunk(i, 'loading');
-  const p = synth(R.chunks[i].speech, ctrl.signal).then((blob) => {
+  const p = synth(R.chunks[i].speech, ctrl.signal, R.profile).then((blob) => {
     if (ctrl !== R.ctrl) return null;
     const url = URL.createObjectURL(blob);
     R.urls.set(i, url);
@@ -1133,8 +1200,9 @@ for (const id of ['budget', 'fx', 'price']) {
 $('#dict').addEventListener('input', (e) => { settings.dict = e.target.value; saveSettings(); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
-  if (!confirm('保存した音声をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
+  if (!confirm('保存した音声と履歴をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
   await cacheClear();
+  R.doc = null;
   renderCache();
 });
 
@@ -1190,6 +1258,8 @@ function remakeAhead() {
   if (!R.ctrl) return;
   R.ctrl.abort();
   R.ctrl = new AbortController();
+  R.profile = curProfile();
+  rememberDoc();
   const keep = audio.currentSrc === R.urls.get(R.idx) ? R.idx : -1;
   for (const [i, u] of R.urls) if (i !== keep) { URL.revokeObjectURL(u); R.urls.delete(i); markChunk(i, ''); }
   for (const i of [...R.loads.keys()]) if (i !== keep) R.loads.delete(i);
@@ -1216,6 +1286,100 @@ $('#previewBtn').addEventListener('click', async () => {
     btn.disabled = false;
     btn.textContent = '試聴';
   }
+});
+
+/* ---------- 履歴 ---------- */
+const fmtDate = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const voiceLabel = (p) => (p.engine === 'gemini' ? `Gemini・${p.voice}` : `Grok・${capitalize(p.voice)}`);
+function make(tag, cls, text) { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; }
+
+async function renderHistory() {
+  const [docs, keys] = await Promise.all([docAll(), cacheKeys()]);
+  const list = $('#histList');
+  list.textContent = '';
+  $('#histEmpty').hidden = docs.length > 0;
+  for (const d of docs) {
+    const saved = d.keys.filter((k) => keys.has(k)).length;
+    const playing = d.id === R.doc?.id && R.chunks.length > 0;
+    const pos = d.pos || { i: 0, t: 0 };
+    const li = make('li', 'hist-item' + (playing ? ' current' : ''));
+    li.dataset.id = d.id;
+    const open = make('button', 'hist-open');
+    open.type = 'button';
+    const state = make('span', 'hist-meta');
+    if (playing) state.append(make('b', null, '再生中'), ' ・ ');
+    state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ 音声 ${saved}/${d.n}段落 保存済み`);
+    const bar = make('span', 'meter');
+    const fill = make('span');
+    fill.style.width = `${pos.done ? 100 : Math.round((pos.i || 0) / d.n * 100)}%`;
+    bar.append(fill);
+    open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}`), state, bar);
+    const actions = make('div', 'hist-actions');
+    for (const [act, label] of [['rename', '名前を変える'], ['delete', '削除']]) {
+      const b = make('button', 'btn ghost small', label);
+      b.type = 'button';
+      b.dataset.act = act;
+      actions.append(b);
+    }
+    li.append(open, actions);
+    list.append(li);
+  }
+}
+
+$('#openHistory').addEventListener('click', () => showView('history'));
+$('#histBack').addEventListener('click', () => showView(lastView === 'read' && R.chunks.length ? 'read' : 'edit'));
+$('#histList').addEventListener('click', async (e) => {
+  const li = e.target.closest('.hist-item');
+  if (!li) return;
+  const id = li.dataset.id, title = li.querySelector('.hist-title').textContent;
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'rename') {
+    const name = prompt('履歴の名前', title)?.trim();
+    if (!name) return;
+    const doc = await docGet(id);
+    if (!doc) return;
+    doc.title = name;
+    await docPut(doc);
+    if (R.doc?.id === id) { R.doc.title = R.title = name; $('#docTitle').textContent = name; updateMedia(); }
+    renderHistory();
+    return;
+  }
+  if (act === 'delete') {
+    if (!confirm(`「${title}」を履歴から消しますか？この履歴の音声も削除されます。`)) return;
+    const docs = await docAll();
+    const doc = docs.find((d) => d.id === id);
+    if (!doc) return;
+    if (R.doc?.id === id) {
+      stopAll();
+      R.chunks = [];
+      R.doc = null;
+      R.sig = '';
+      $('#chunkList').textContent = '';
+      $('#player').hidden = true;
+      document.body.classList.remove('has-player');
+    }
+    // ほかの履歴でも使っている音声は残す
+    const keep = new Set(docs.filter((d) => d.id !== id).flatMap((d) => d.keys));
+    await idb('readwrite', (s) => { for (const k of doc.keys) if (!keep.has(k)) s.delete(k); return null; });
+    await idbStore('docs', 'readwrite', (s) => s.delete(id));
+    await idbStore('texts', 'readwrite', (s) => s.delete(id));
+    renderHistory();
+    return;
+  }
+  // 開く：iPhoneではタップした瞬間に音を鳴らせるようにしておく必要がある
+  unlock(audio);
+  if (R.doc?.id === id && R.chunks.length) {
+    showView('read');
+    if (!R.wantPlay) togglePlay();
+    return;
+  }
+  const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
+  if (!doc || typeof text !== 'string') { showNotice('この履歴の文章が見つかりませんでした。'); return; }
+  textEl.value = text;
+  store.set('text', text);
+  hideNotice();
+  const pos = doc.pos || {};
+  startReading(text, pos.done ? 0 : pos.i || 0, pos.done ? 0 : pos.t || 0, doc);
 });
 
 /* ---------- 書き出し ---------- */
@@ -1276,12 +1440,12 @@ let exp = null;
 async function openExport() {
   if (!R.chunks.length) return;
   const keys = await cacheKeys();
-  const fresh = R.chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech)) ? 0 : c.chars), 0);
-  const yen = extraYen(fresh);
+  const fresh = R.chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech, R.profile)) ? 0 : c.chars), 0);
+  const yen = extraYen(fresh, R.profile.engine);
   const mins = Math.max(1, Math.round(R.total / CHARS_PER_MIN));
   $('#expInfo').textContent = `全${R.chunks.length}段落・約${fmtDur(mins)}の音声を、1つの音声ファイルにまとめます。`
     + (fresh ? `まだ作っていない${fmtNum(fresh)}字分（${yen ? `約${fmtYen(yen)}` : '無料枠の範囲内'}）を新しく作ります。` : 'すべて作成済みなので、料金はかかりません。')
-    + (settings.engine === 'gemini' && mins > 60 ? 'Geminiの音声は大きい（1時間で約170MB）ので、長すぎると保存できないことがあります。' : '')
+    + (R.profile.engine === 'gemini' && mins > 60 ? 'Geminiの音声は大きい（1時間で約170MB）ので、長すぎると保存できないことがあります。' : '')
     + (mins > 180 ? '長いので、まとめるのに数分かかることがあります。' : '');
   $('#expFill').style.width = '0';
   $('#expMsg').hidden = true;
@@ -1299,7 +1463,7 @@ async function runExport() {
   const worker = async () => {
     while (next < n && !ctrl.signal.aborted) {
       const i = next++;
-      const blob = await synth(chunks[i].speech, ctrl.signal);
+      const blob = await synth(chunks[i].speech, ctrl.signal, R.profile);
       parts[i] = new Uint8Array(await blob.arrayBuffer());
       $('#expFill').style.width = `${(++done / n * 100).toFixed(1)}%`;
     }
