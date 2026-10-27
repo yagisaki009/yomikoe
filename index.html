@@ -1,0 +1,1350 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>よみこえ</title>
+<meta name="description" content="AIの自然な声で、長い文章を読み上げるWebアプリ">
+<meta name="theme-color" content="#EDF0EE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111614" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="よみこえ">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<style>
+/* Layout: one reading column; text sits on a paper surface, the player is docked to the bottom edge like a music app */
+:root {
+  --bg: #EDF0EE; --surface: #FBFCFB; --ink: #1B2321; --muted: #5E6B67; --line: #D3DAD7;
+  --accent: #2C5A86; --accent-ink: #FFFFFF; --now: #DCE7F0;
+  --warn: #7A4A00; --warn-bg: #FBEFD9; --err: #A33A2B;
+  --f-ui: "Zen Kaku Gothic New", "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+  --f-read: "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --r: 12px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111614; --surface: #18201D; --ink: #E3EAE6; --muted: #97A6A0; --line: #2A3531;
+    --accent: #8BB3DB; --accent-ink: #0E1A26; --now: #1F2E3B;
+    --warn: #F0C27A; --warn-bg: #2D2414; --err: #EF9A8C;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111614; --surface: #18201D; --ink: #E3EAE6; --muted: #97A6A0; --line: #2A3531;
+  --accent: #8BB3DB; --accent-ink: #0E1A26; --now: #1F2E3B;
+  --warn: #F0C27A; --warn-bg: #2D2414; --err: #EF9A8C;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 var(--f-ui);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  -webkit-tap-highlight-color: transparent;
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); background: var(--bg); z-index: 10; }
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; cursor: pointer; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.top, main { max-width: 720px; margin-inline: auto; }
+.top { display: flex; align-items: center; justify-content: space-between; padding-block: 14px 6px; }
+.brand { display: flex; align-items: center; gap: 10px; font: 700 21px/1 var(--f-read); letter-spacing: .12em; }
+.brand svg { width: 26px; height: 26px; }
+.icon-btn { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; }
+.icon-btn svg { width: 24px; height: 24px; }
+
+main { padding-block: 4px 40px; }
+body.has-player main { padding-bottom: 190px; }
+
+/* 入力画面 */
+.label { display: block; font-size: 13px; color: var(--muted); letter-spacing: .1em; margin-bottom: 6px; }
+#text {
+  display: block; width: 100%; min-height: 48vh; resize: vertical;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink);
+  font: 500 17px/1.9 var(--f-read); padding: 14px 16px;
+}
+.tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.tags-label { font-size: 12px; color: var(--muted); letter-spacing: .12em; margin-right: 2px; }
+.tags button { font-size: 13px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); }
+.estimate { margin: 14px 0; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.estimate b { color: var(--ink); font-weight: 700; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { border-radius: 999px; padding: 11px 18px; font-weight: 500; text-decoration: none; text-align: center; }
+.btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+.btn.primary { background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 700; flex: 1 1 180px; }
+.btn.small { padding: 7px 13px; font-size: 14px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* 読み上げ画面 */
+.read-head {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding-block: 8px;
+}
+.read-head h1 { margin: 0; font-size: 14px; font-weight: 500; color: var(--muted); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chunks { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.chunk {
+  display: flex; flex-direction: column; gap: .7em;
+  padding: 12px 14px; border-radius: 10px; cursor: pointer;
+  font: 500 18px/2 var(--f-read); transition: background-color .35s, color .35s;
+}
+.chunk p { margin: 0; overflow-wrap: anywhere; }
+.chunk.read { color: var(--muted); }
+.chunk.now { background: var(--now); color: var(--ink); }
+.chunk[data-state="error"] { outline: 1px dashed var(--err); outline-offset: -1px; }
+.chunk.now[data-state="loading"] { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { background-color: transparent; } }
+
+/* プレーヤー */
+.player {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  background: var(--surface); border-top: 1px solid var(--line);
+  padding-top: 10px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.player > * { max-width: 720px; margin-inline: auto; }
+.progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+#progressFill { height: 100%; width: 0; background: var(--accent); transition: width .4s linear; }
+.player-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.status { margin: 0; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.rate { flex: none; border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 3px 10px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.controls { display: flex; align-items: center; justify-content: center; gap: clamp(8px, 4vw, 26px); margin-top: 4px; }
+.controls button { width: 48px; height: 48px; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; position: relative; }
+.controls svg { width: 26px; height: 26px; fill: currentColor; }
+.controls .play { width: 62px; height: 62px; background: var(--accent); color: var(--accent-ink); }
+.controls .play svg { width: 30px; height: 30px; }
+.controls .play.waiting::after {
+  content: ""; position: absolute; inset: -5px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--accent); animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(1turn); } }
+
+/* お知らせ */
+.notice {
+  position: fixed; z-index: 30; top: calc(env(safe-area-inset-top, 0px) + 8px);
+  left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px));
+  max-width: 696px; margin-inline: auto;
+  display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; border-radius: var(--r);
+  background: var(--warn-bg); color: var(--warn); box-shadow: 0 6px 24px rgb(0 0 0 / .12);
+}
+.notice p { margin: 0; flex: 1; min-width: 0; font-size: 14px; line-height: 1.5; }
+.notice .btn { flex: none; border-color: currentColor; color: inherit; }
+.notice .x { flex: none; width: 32px; height: 32px; border: 0; background: transparent; font-size: 20px; line-height: 1; }
+
+/* 設定シート */
+dialog {
+  border: 0; padding: 0; width: 100%; max-width: min(600px, 100%); max-height: 90dvh;
+  margin: auto auto 0; border-radius: 18px 18px 0 0;
+  background: var(--surface); color: var(--ink); overflow: auto;
+}
+dialog::backdrop { background: rgb(0 0 0 / .4); }
+@media (min-width: 640px) { dialog { margin: auto; border-radius: 18px; } }
+.sheet {
+  display: flex; flex-direction: column; gap: 22px;
+  padding-top: 16px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(18px, env(safe-area-inset-left, 0px));
+  padding-right: max(18px, env(safe-area-inset-right, 0px));
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; }
+.sheet-head h2 { margin: 0; font: 700 19px/1.3 var(--f-read); letter-spacing: .06em; }
+.group { display: flex; flex-direction: column; gap: 8px; }
+.group h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.field-row { display: flex; align-items: center; gap: 8px; }
+.field-row > :first-child { flex: 1; min-width: 0; }
+input, select, textarea {
+  font: 16px/1.5 var(--f-ui); color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; width: 100%; min-width: 0;
+}
+#dict { font-family: var(--f-read); resize: vertical; }
+.money { display: flex; flex-direction: column; gap: 6px; }
+.money label { display: grid; grid-template-columns: minmax(0, 1fr) 110px 7.5em; align-items: center; gap: 8px; font-size: 14px; }
+.money label span:last-child { font-size: 12px; color: var(--muted); }
+.money input { text-align: right; font-variant-numeric: tabular-nums; }
+.usage { margin: 0; font-size: 15px; font-variant-numeric: tabular-nums; }
+.meter { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.meter > div { height: 100%; width: 0; background: var(--accent); }
+.meter.over > div { background: var(--err); }
+.hint { margin: 0; font-size: 13px; line-height: 1.65; color: var(--muted); }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
+.seg label { position: relative; padding: 8px 6px; border-radius: 9px; text-align: center; font-size: 15px; line-height: 1.35; cursor: pointer; }
+.seg label:has(input:checked) { background: var(--surface); font-weight: 700; box-shadow: 0 1px 3px rgb(0 0 0 / .14); }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--accent); }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+.msg { margin: 0; font-size: 14px; color: var(--err); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 26 26" aria-hidden="true"><rect width="26" height="26" rx="7" fill="var(--accent)"/><g fill="var(--accent-ink)"><rect x="4.5" y="10" width="2" height="6" rx="1"/><rect x="8" y="7.5" width="2" height="11" rx="1"/><rect x="11.5" y="5" width="2" height="16" rx="1"/><rect x="15" y="8.5" width="2" height="9" rx="1"/><rect x="18.5" y="7" width="2" height="12" rx="1"/></g></svg>
+    <span>よみこえ</span>
+  </div>
+  <button id="openSettings" class="icon-btn" aria-label="設定">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h3M13 17h7"/><circle cx="16" cy="7" r="2.6"/><circle cx="10" cy="17" r="2.6"/></svg>
+  </button>
+</header>
+
+<div id="notice" class="notice" role="status" hidden>
+  <p id="noticeText"></p>
+  <button id="noticeAction" class="btn ghost small" hidden></button>
+  <button id="noticeClose" class="x" aria-label="閉じる">×</button>
+</div>
+
+<main>
+  <section id="editView">
+    <label for="text" class="label">読み上げる文章</label>
+    <textarea id="text" spellcheck="false" placeholder="ここに文章を貼り付けてください。字数の上限はありません。"></textarea>
+    <div class="tags" role="group" aria-label="表現の指示を入れる">
+      <span class="tags-label">表現</span>
+      <button type="button" data-tag="[pause]">間</button>
+      <button type="button" data-tag="[long-pause]">長い間</button>
+      <button type="button" data-tag="[breath]">息つぎ</button>
+      <button type="button" data-tag="[sigh]">ため息</button>
+      <button type="button" data-wrap="whisper" data-grok>ささやき</button>
+      <button type="button" data-wrap="soft" data-grok>やわらかく</button>
+      <button type="button" data-wrap="slow" data-grok>ゆっくり</button>
+    </div>
+    <p id="estimate" class="estimate"></p>
+    <div class="actions">
+      <button type="button" id="pasteBtn" class="btn ghost">貼り付け</button>
+      <button type="button" id="clearBtn" class="btn ghost">消去</button>
+      <button type="button" id="resumeBtn" class="btn ghost" hidden>続きから</button>
+      <button type="button" id="startBtn" class="btn primary">読み上げる</button>
+    </div>
+  </section>
+
+  <section id="readView" hidden>
+    <div class="read-head">
+      <button type="button" id="editBtn" class="btn ghost small">編集</button>
+      <h1 id="docTitle"></h1>
+      <button type="button" id="exportBtn" class="btn ghost small">書き出し</button>
+    </div>
+    <ol id="chunkList" class="chunks"></ol>
+  </section>
+</main>
+
+<div id="player" class="player" hidden>
+  <div class="progress"><div id="progressFill"></div></div>
+  <div class="player-row">
+    <p id="playerStatus" class="status"></p>
+    <button type="button" id="rateBtn" class="rate" aria-label="再生速度">1.0×</button>
+  </div>
+  <div class="controls">
+    <button type="button" id="prevBtn" aria-label="前の段落"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2.2v14H6zM19.5 5.6v12.8L9.4 12z"/></svg></button>
+    <button type="button" id="backBtn" aria-label="10秒戻る"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5V1.8L7.4 5.6 12 9.4V6.6a6.4 6.4 0 1 1-6.4 6.4H3.5A8.5 8.5 0 1 0 12 4.5z"/><text x="12" y="16.3" font-size="6.6" font-weight="700" text-anchor="middle" font-family="system-ui">10</text></svg></button>
+    <button type="button" id="playBtn" class="play" aria-label="再生"><svg viewBox="0 0 24 24" aria-hidden="true"><path id="playIcon" d="M8 5.2v13.6L19 12z"/></svg></button>
+    <button type="button" id="fwdBtn" aria-label="10秒進む"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5V1.8l4.6 3.8L12 9.4V6.6a6.4 6.4 0 1 0 6.4 6.4h2.1A8.5 8.5 0 1 1 12 4.5z"/><text x="12" y="16.3" font-size="6.6" font-weight="700" text-anchor="middle" font-family="system-ui">10</text></svg></button>
+    <button type="button" id="nextBtn" aria-label="次の段落"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.8 5H18v14h-2.2zM4.5 5.6v12.8L14.6 12z"/></svg></button>
+  </div>
+</div>
+
+<dialog id="settings" aria-labelledby="setTitle">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2 id="setTitle">設定</h2>
+      <button type="button" id="closeSettings" class="btn ghost small">閉じる</button>
+    </div>
+    <p id="setMsg" class="msg" hidden></p>
+
+    <section class="group">
+      <h3>音声の種類</h3>
+      <div class="seg" role="radiogroup" aria-label="音声の種類">
+        <label><input type="radio" name="engine" value="gemini">Gemini（Google）<small>無料・1日の回数に上限</small></label>
+        <label><input type="radio" name="engine" value="xai">Grok（xAI）<small>文字数に応じて有料</small></label>
+      </div>
+    </section>
+
+    <section class="group" data-engine="gemini">
+      <h3>Gemini APIキー</h3>
+      <div class="field-row">
+        <input id="geminiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIzaで始まるキー">
+        <button type="button" class="btn ghost small" data-reveal="geminiKey">表示</button>
+      </div>
+      <p class="hint"><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> で作れます（カード登録は不要）。お支払い情報を登録したプロジェクトで作ると有料になるので、新しいプロジェクトで作ってください。キーはこの端末の中にだけ保存されます。</p>
+    </section>
+
+    <section class="group" data-engine="gemini">
+      <h3>読み方の雰囲気</h3>
+      <input id="geminiStyle" type="text" autocomplete="off" placeholder="例：落ち着いた声で、物語を朗読するように">
+      <p class="hint">声の調子を言葉で指示できます。怪談なら「静かに、低い声で語るように」など。</p>
+    </section>
+
+    <section class="group" data-engine="xai">
+      <h3>xAI APIキー</h3>
+      <div class="field-row">
+        <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="xai-で始まるキー">
+        <button type="button" class="btn ghost small" data-reveal="apiKey">表示</button>
+      </div>
+      <p class="hint">キーはこの端末の中にだけ保存され、xAI以外には送られません。キーは <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a> で発行できます。</p>
+    </section>
+
+    <section class="group">
+      <h3>声</h3>
+      <div class="field-row">
+        <select id="voice" aria-label="声"></select>
+        <button type="button" id="previewBtn" class="btn ghost small">試聴</button>
+      </div>
+      <p class="hint">どの声も日本語で話せます。声を変えると、まだ聞いていない部分は新しい声で作り直します。</p>
+    </section>
+
+    <section class="group">
+      <h3>今月の利用</h3>
+      <p id="usageText" class="usage"></p>
+      <div id="usageMeter" class="meter"><div id="usageFill"></div></div>
+      <div class="money">
+        <label>月の上限<input id="budget" type="number" inputmode="numeric" min="0" step="100"><span>円</span></label>
+        <label>為替<input id="fx" type="number" inputmode="decimal" min="1" step="1"><span>円 / 1ドル</span></label>
+        <label>Grokの単価<input id="price" type="number" inputmode="decimal" min="0" step="0.1"><span>ドル / 100万字</span></label>
+      </div>
+      <p class="hint">この端末で作った音声の文字数から出した目安です。Geminiは無料枠のキーとして0円で数えています。正確な請求額は、xAIやGoogleの管理画面で確認してください。一度作った段落は保存されるので、聞き直しても料金はかかりません。</p>
+      <div><button type="button" id="resetUsage" class="btn ghost small">使用量を0に戻す</button></div>
+    </section>
+
+    <section class="group">
+      <h3>読み方の辞書</h3>
+      <textarea id="dict" rows="4" placeholder="怪異=かいい&#10;御手洗=みたらい"></textarea>
+      <p class="hint">1行に「書き方=読み方」で登録すると、その読みで発音します。小説の「漢字《かんじ》」形式のルビも読みとして使います。</p>
+    </section>
+
+    <section class="group">
+      <h3>保存した音声</h3>
+      <div class="field-row">
+        <p id="cacheText" class="usage"></p>
+        <button type="button" id="clearCache" class="btn ghost small">すべて削除</button>
+      </div>
+    </section>
+  </div>
+</dialog>
+
+<dialog id="exportDlg" aria-labelledby="expTitle">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2 id="expTitle">音声ファイルに書き出し</h2>
+      <button type="button" id="expClose" class="btn ghost small">閉じる</button>
+    </div>
+    <p id="expInfo" class="hint"></p>
+    <div class="meter"><div id="expFill"></div></div>
+    <p id="expMsg" class="msg" hidden></p>
+    <div class="actions">
+      <button type="button" id="expStart" class="btn primary">書き出す</button>
+      <a id="expSave" class="btn primary" hidden>ファイルを保存</a>
+    </div>
+  </div>
+</dialog>
+
+<audio id="audio" preload="auto" playsinline></audio>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+
+// Geminiの声（f=女性, m=男性 と声の特徴）
+const GEMINI_VOICES = { Achernar: ['f', 'やわらか'], Achird: ['m', '親しみやすい'], Algenib: ['m', 'しゃがれ声'], Algieba: ['m', 'なめらか'], Alnilam: ['m', 'しっかり'], Aoede: ['f', '軽やか'], Autonoe: ['f', '明るい'], Callirrhoe: ['f', 'おおらか'], Charon: ['m', '知的'], Despina: ['f', 'なめらか'], Enceladus: ['m', '息まじり'], Erinome: ['f', 'はっきり'], Fenrir: ['m', '勢いがある'], Gacrux: ['f', '大人びた'], Iapetus: ['m', 'はっきり'], Kore: ['f', 'しっかり'], Laomedeia: ['f', '弾む'], Leda: ['f', '若々しい'], Orus: ['m', 'しっかり'], Pulcherrima: ['f', '前向き'], Puck: ['m', '弾む'], Rasalgethi: ['m', '知的'], Sadachbia: ['m', '生き生き'], Sadaltager: ['m', '物知り'], Schedar: ['m', '落ち着き'], Sulafat: ['f', 'あたたか'], Umbriel: ['m', 'おおらか'], Vindemiatrix: ['f', 'やさしい'], Zephyr: ['f', '明るい'], Zubenelgenubi: ['m', 'くだけた'] };
+const GEMINI_MODEL = 'gemini-3.8-flash-tts';
+const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
+const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
+const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
+const SPEAKABLE = /[\p{L}\p{N}]/u;
+// 最初の2回はすぐ鳴らせるよう短くし、その後は段落をまとめて自然な抑揚を保つ。
+// Geminiは無料だと1日の回数に上限があるので、大きめにまとめて回数を減らす
+const FIRST = [80, 250];
+const CHUNK = { xai: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } };
+const AHEAD = 3, PARALLEL = 2;
+const CHARS_PER_MIN = 330;
+const RATES = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
+const PREVIEW_TEXT = 'こんにちは。この声で、あなたの文章を読み上げます。';
+const SAMPLE = `（これはサンプルです。消して、読み上げたい文章を貼り付けてください）
+
+夕方から降りはじめた雨は、夜になっても止む気配がなかった。
+窓を少しだけ開けると、湿った土の匂いと一緒に、遠くを走る電車の音が流れこんでくる。
+この欄には何万字でも入れられます。長い文章は段落ごとに区切り、少し先まで音声を作っておきながら、途切れないように順番に読み上げます。`;
+
+/* ---------- 保存 ---------- */
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('yk.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
+};
+const savedSettings = store.get('settings', {});
+const settings = Object.assign({ engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+// 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
+if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
+for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
+const saveSettings = () => store.set('settings', settings);
+const curVoice = () => (settings.engine === 'gemini' ? settings.geminiVoice : settings.voice);
+const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settings.apiKey);
+// 動作確認のときだけ宛先を差し替えられるようにしてある
+const API = store.get('apiBase', 'https://api.x.ai/v1');
+const GEMINI_API = store.get('geminiBase', 'https://generativelanguage.googleapis.com/v1beta');
+
+/* ---------- 料金 ---------- */
+const monthKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+function usage() {
+  const u = store.get('usage', null);
+  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0 };
+  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0 };
+}
+function addUsage(engine, n) { const u = usage(); u[engine] = Math.max(0, u[engine] + n); store.set('usage', u); renderUsage(); }
+const costYen = (u) => u.xai * settings.price / 1e6 * settings.fx;
+function extraYen(n, engine = settings.engine) { const u = usage(), before = costYen(u); u[engine] += n; return costYen(u) - before; }
+const fmtNum = (n) => Math.round(n).toLocaleString('ja-JP');
+const fmtYen = (y) => (y <= 0 ? '0円' : y < 10 ? `${y.toFixed(1)}円` : `${fmtNum(y)}円`);
+const fmtDur = (m) => (m < 60 ? `${m}分` : `${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ''}`);
+const fmtRate = (r) => `${r.toFixed(Math.round(r * 100) % 10 ? 2 : 1)}×`;
+let overBudgetOk = false;
+
+/* ---------- 音声の保存（IndexedDB） ---------- */
+function hash(str) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0') + '-' + str.length.toString(36);
+}
+let dbPromise = null;
+function openDb() {
+  dbPromise ||= new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('yomikoe', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('audio');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+  return dbPromise;
+}
+async function idb(mode, fn) {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('audio', mode);
+      const req = fn(tx.objectStore('audio'));
+      tx.oncomplete = () => resolve(req ? req.result : null);
+      tx.onerror = tx.onabort = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+const cacheGet = (k) => idb('readonly', (s) => s.get(k));
+const cachePut = (k, buf) => idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then(trimCache);
+// Geminiの音声は圧縮されていない（1時間で約170MB）ので、保存量が増えすぎたら古いものから消す
+const CACHE_LIMIT = 600 * 1048576, CACHE_KEEP = 450 * 1048576;
+let trimmedAt = 0;
+async function trimCache() {
+  if (Date.now() - trimmedAt < 60000) return;
+  trimmedAt = Date.now();
+  const db = await openDb();
+  if (!db) return;
+  const items = await new Promise((resolve) => {
+    const list = [];
+    try {
+      const req = db.transaction('audio').objectStore('audio').openCursor();
+      req.onsuccess = () => { const c = req.result; if (c) { list.push([c.key, c.value.size || 0, c.value.ts || 0]); c.continue(); } else resolve(list); };
+      req.onerror = () => resolve(list);
+    } catch { resolve(list); }
+  });
+  let total = items.reduce((a, it) => a + it[1], 0);
+  if (total <= CACHE_LIMIT) return;
+  items.sort((a, b) => a[2] - b[2]);
+  const drop = [];
+  for (const [k, size] of items) { if (total <= CACHE_KEEP) break; drop.push(k); total -= size; }
+  await idb('readwrite', (s) => { for (const k of drop) s.delete(k); return null; });
+}
+const audioType = (buf) => (new Uint8Array(buf, 0, 4).join() === '82,73,70,70' ? 'audio/wav' : 'audio/mpeg');
+const toBlob = (buf) => new Blob([buf], { type: audioType(buf) });
+const cacheClear = () => idb('readwrite', (s) => s.clear());
+const cacheKeys = async () => new Set((await idb('readonly', (s) => s.getAllKeys())) || []);
+async function cacheSize() {
+  const db = await openDb();
+  if (!db) return 0;
+  return new Promise((resolve) => {
+    let total = 0;
+    try {
+      const req = db.transaction('audio').objectStore('audio').openCursor();
+      req.onsuccess = () => { const c = req.result; if (c) { total += c.value.size || 0; c.continue(); } else resolve(total); };
+      req.onerror = () => resolve(total);
+    } catch { resolve(0); }
+  });
+}
+
+/* ---------- 読み上げ（Gemini / xAI） ---------- */
+class TtsError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const keyFor = (text, engine = settings.engine, voice = curVoice()) => hash(`${engine}|${voice}|${engine === 'gemini' ? settings.geminiStyle.trim() : ''}|ja|${text}`);
+
+function requestXai(text, voice, signal) {
+  return fetch(`${API}/tts`, {
+    method: 'POST', signal,
+    headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice_id: voice, language: 'ja', output_format: { codec: 'mp3', sample_rate: 24000, bit_rate: 128000 } }),
+  });
+}
+// Geminiは表現タグの書き方が違うので置き換え、対応のないもの（ささやき等の囲み）は外して送る
+const GEMINI_TAGS = { pause: '<short pause>', 'long-pause': '<long pause>', breath: '<breath>', inhale: '<breath>', exhale: '<exhales>', sigh: '<sigh>', laugh: '<laugh>', chuckle: '<chuckle>', giggle: '<giggle>', cry: '<cry>', tsk: '<tsk>' };
+function requestGemini(text, voice, signal) {
+  const part = { type: 'text', text: text.replace(TAG_RE, (t) => GEMINI_TAGS[t.slice(1, -1)] || '') };
+  if (settings.geminiStyle.trim()) part.annotations = [{ type: 'speech_metadata', style: settings.geminiStyle.trim() }];
+  return fetch(`${GEMINI_API}/interactions`, {
+    method: 'POST', signal,
+    headers: { 'x-goog-api-key': settings.geminiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: GEMINI_MODEL, input: [{ type: 'user_input', content: [part] }], response_format: { type: 'audio' }, generation_config: { speech_config: [{ voice }] } }),
+  });
+}
+// 返事の中から最後の音声データを探す
+function findAudio(node) {
+  let found = null;
+  (function walk(n) {
+    if (Array.isArray(n)) n.forEach(walk);
+    else if (n && typeof n === 'object') {
+      if (n.type === 'audio' && typeof n.data === 'string') found = n.data;
+      Object.values(n).forEach(walk);
+    }
+  })(node);
+  return found;
+}
+function retryDelayMs(body) {
+  const m = /"retryDelay":\s*"(\d+(?:\.\d+)?)s"/.exec(body);
+  return m ? parseFloat(m[1]) * 1000 : 0;
+}
+function errorDetail(body) {
+  try { const d = JSON.parse(body); return String(d.error?.message || d.error || d.message || ''); } catch { return body.trimStart().startsWith('<') ? '' : body; }
+}
+function base64ToBuffer(b64) {
+  const bin = atob(b64), u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8.buffer;
+}
+
+async function synth(text, signal) {
+  const engine = settings.engine, voice = curVoice(), key = keyFor(text, engine, voice);
+  const hit = await cacheGet(key);
+  if (hit && hit.buf) return toBlob(hit.buf);
+  if (!curKey()) throw new TtsError('nokey', `${ENGINE_NAME[engine]}のAPIキーが入っていません。`);
+  const n = text.length;
+  if (!overBudgetOk && costYen(usage()) + extraYen(n, engine) > settings.budget) throw new TtsError('budget', `今月の上限（${fmtNum(settings.budget)}円）に達しました。`);
+  addUsage(engine, n); // 並行して作っても上限を超えないよう、先に計上しておく
+  try {
+    for (let attempt = 0; ; attempt++) {
+      let res;
+      try {
+        res = await (engine === 'gemini' ? requestGemini(text, voice, signal) : requestXai(text, voice, signal));
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
+        throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+      }
+      if (res.ok) {
+        let buf;
+        if (engine === 'gemini') {
+          const b64 = findAudio(await res.json());
+          if (!b64) throw new TtsError('bad', 'Geminiから音声が返ってきませんでした。');
+          buf = base64ToBuffer(b64);
+        } else {
+          buf = await res.arrayBuffer();
+        }
+        cachePut(key, buf);
+        return toBlob(buf);
+      }
+      const raw = await res.text().catch(() => '');
+      const detail = errorDetail(raw);
+      if (res.status === 429 && engine === 'gemini' && /per[ _]?day/i.test(raw)) throw new TtsError('quota', '今日のGeminiの無料枠を使い切りました。毎日、日本時間の16〜17時ごろに回復します。');
+      // 無料枠は1分あたりの回数にも上限があるので、言われた時間だけ待ってやり直す
+      if ((res.status === 429 || res.status >= 500) && attempt < (engine === 'gemini' ? 6 : 3)) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
+      if (engine === 'gemini') {
+        if (/api key/i.test(detail)) throw new TtsError('auth', 'GeminiのAPIキーが正しくありません。設定で入れ直してください。');
+        if (res.status === 403) throw new TtsError('auth', `このキーではGeminiの読み上げが使えません。Google AI Studioでキーを確認してください。（${detail.slice(0, 80)}）`);
+      } else {
+        if (res.status === 401) throw new TtsError('auth', 'xAIのAPIキーが正しくありません。設定で入れ直してください。');
+        if (res.status === 402 || res.status === 403) throw new TtsError('auth', 'xAIのクレジットが足りないか、このキーでは読み上げが使えません。xAIのコンソールを確認してください。');
+      }
+      throw new TtsError('bad', `音声を作れませんでした（${res.status}）。${detail.slice(0, 140)}`);
+    }
+  } catch (e) {
+    addUsage(engine, -n);
+    throw e;
+  }
+}
+
+/* ---------- 文章を区切る ---------- */
+const KANJI_RUBY = /[㐀-䶿一-鿿豈-﫿々〆ヶ]+《([^》\n]+)》/g;
+function dictEntries() {
+  return settings.dict.split('\n')
+    .map((l) => l.split(/[=＝]/))
+    .filter((p) => p.length >= 2 && p[0].trim() && p.slice(1).join('=').trim())
+    .map((p) => [p[0].trim(), p.slice(1).join('=').trim()])
+    .sort((a, b) => b[0].length - a[0].length);
+}
+function toSpeech(s, dict) {
+  s = s.replace(/［＃[^］]*］/g, '')
+    .replace(/[｜|]([^｜|《\n]+)《([^》\n]+)》/g, '$2')
+    .replace(KANJI_RUBY, '$1')
+    .replace(/《[^》\n]*》/g, '');
+  for (const [from, to] of dict) s = s.split(from).join(to);
+  return s;
+}
+function toDisplay(s) {
+  return s.replace(/［＃[^］]*］/g, '')
+    .replace(/[｜|]([^｜|《\n]+)《[^》\n]*》/g, '$1')
+    .replace(/《[^》\n]*》/g, '')
+    .replace(TAG_RE, '');
+}
+const SENTENCE = /[^。！？!?…]*(?:[。！？!?]+|…+)[」』）)"”’]*|[^。！？!?…]+/g;
+const splitSentences = (line) => line.match(SENTENCE) || [line];
+function splitLong(s, max) {
+  if (s.length <= max) return [s];
+  const out = [];
+  let rest = s;
+  while (rest.length > max) {
+    let cut = Math.max(rest.lastIndexOf('、', max), rest.lastIndexOf('，', max), rest.lastIndexOf(' ', max), rest.lastIndexOf('　', max));
+    cut = cut < max / 2 ? max : cut + 1;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+function chunkText(raw) {
+  const dict = dictEntries();
+  const chunks = [];
+  let cur = null, pending = [];
+  const { target, max } = CHUNK[settings.engine];
+  const limit = () => FIRST[chunks.length] ?? target;
+  const flush = () => { if (cur) { chunks.push(cur); cur = null; } };
+  const add = (sp, dp, pid) => {
+    if (!cur) { cur = { speech: '', display: pending, pid: -1 }; pending = []; }
+    if (cur.pid === pid) { cur.display[cur.display.length - 1] += dp; cur.speech += sp; }
+    else { cur.display.push(dp); cur.speech += (cur.speech ? '\n' : '') + sp; cur.pid = pid; }
+  };
+  raw.replace(/\r\n?/g, '\n').split('\n').forEach((line, pid) => {
+    line = line.trim();
+    if (!line) return;
+    const units = splitSentences(line).flatMap((s) => splitLong(s, max))
+      .map((s) => ({ sp: toSpeech(s, dict).trim(), dp: toDisplay(s) }))
+      .filter((u) => u.sp || u.dp.trim());
+    const sp = units.map((u) => u.sp).join('');
+    const dp = units.map((u) => u.dp).join('');
+    if (!SPEAKABLE.test(sp)) {
+      // 「＊＊＊」のような区切り行は読まずに、段落の切れ目として使う
+      if (dp.trim()) (cur ? cur.display : chunks.length ? chunks[chunks.length - 1].display : pending).push(dp);
+      flush();
+      return;
+    }
+    if (cur && cur.speech.length + sp.length > limit()) flush();
+    if (sp.length <= limit()) { add(sp, dp, pid); return; }
+    for (const u of units) {
+      if (cur && cur.speech.length + u.sp.length > limit()) flush();
+      add(u.sp, u.dp, pid);
+    }
+  });
+  flush();
+  if (pending.length && chunks.length) chunks[chunks.length - 1].display.push(...pending);
+  return chunks.map((c, i) => ({ i, speech: c.speech, display: c.display, chars: c.speech.length }));
+}
+
+/* ---------- 画面 ---------- */
+function showView(name) {
+  $('#editView').hidden = name !== 'edit';
+  $('#readView').hidden = name !== 'read';
+  if (name === 'read') setTimeout(() => setNow(R.idx, true), 0);
+  else scheduleEstimate();
+}
+function showNotice(text, label, fn) {
+  $('#noticeText').textContent = text;
+  const b = $('#noticeAction');
+  b.hidden = !label;
+  if (label) { b.textContent = label; b.onclick = fn; }
+  $('#notice').hidden = false;
+}
+const hideNotice = () => { $('#notice').hidden = true; };
+$('#noticeClose').addEventListener('click', hideNotice);
+
+let estTimer;
+function scheduleEstimate() { clearTimeout(estTimer); estTimer = setTimeout(renderEstimate, 350); }
+async function renderEstimate() {
+  const text = $('#text').value;
+  const chunks = chunkText(text);
+  const total = chunks.reduce((a, c) => a + c.chars, 0);
+  const pos = store.get('pos', null);
+  const resumable = pos && pos.h === hash(text) && (pos.i > 0 || pos.t > 5);
+  $('#resumeBtn').hidden = !resumable;
+  if (resumable) $('#resumeBtn').textContent = `続きから（${pos.i + 1}段落目）`;
+  const u = usage();
+  const used = settings.engine === 'gemini'
+    ? `今月のGemini ${fmtNum(u.gemini)}字（無料枠・1日の回数に上限あり）`
+    : `今月 ${fmtYen(costYen(u))} / ${fmtNum(settings.budget)}円`;
+  if (!total) { $('#estimate').textContent = `文章を入れると、読み上げ時間と料金の目安が出ます。${used}`; return; }
+  const keys = await cacheKeys();
+  const fresh = chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech)) ? 0 : c.chars), 0);
+  const yen = extraYen(fresh);
+  const mins = Math.max(1, Math.round(total / CHARS_PER_MIN / settings.rate));
+  const note = settings.engine === 'gemini' && fresh ? '（無料枠）' : fresh < total ? '（作成済みの部分は無料）' : '';
+  $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ 料金の目安 <b>${fmtYen(yen)}</b>${note}<br>${used}`;
+}
+
+const textEl = $('#text');
+let saveTimer;
+textEl.addEventListener('input', () => {
+  scheduleEstimate();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => store.set('text', textEl.value), 600);
+});
+textEl.value = store.get('text', null) ?? SAMPLE;
+
+const tags = $('.tags');
+tags.addEventListener('pointerdown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+tags.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const { selectionStart: s, selectionEnd: end, value } = textEl;
+  if (b.dataset.tag) {
+    textEl.setRangeText(b.dataset.tag, s, end, 'end');
+  } else {
+    const open = `<${b.dataset.wrap}>`, close = `</${b.dataset.wrap}>`, picked = value.slice(s, end);
+    textEl.setRangeText(open + picked + close, s, end, 'end');
+    if (!picked) textEl.setSelectionRange(s + open.length, s + open.length);
+  }
+  textEl.focus();
+  textEl.dispatchEvent(new Event('input'));
+});
+
+if (navigator.clipboard?.readText) {
+  $('#pasteBtn').addEventListener('click', async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      if (t) { textEl.value = t; textEl.dispatchEvent(new Event('input')); }
+    } catch { showNotice('貼り付けできませんでした。文章の欄を長押しして「ペースト」を選んでください。'); }
+  });
+} else {
+  $('#pasteBtn').hidden = true;
+}
+$('#clearBtn').addEventListener('click', () => {
+  if (!textEl.value || confirm('文章を消しますか？')) { textEl.value = ''; textEl.dispatchEvent(new Event('input')); textEl.focus(); }
+});
+
+/* ---------- 再生 ---------- */
+const audio = $('#audio');
+const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0 };
+let silentUrl = null;
+
+function silentWav(ms = 200, rate = 8000) {
+  const n = Math.round(rate * ms / 1000), buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, n * 2, true);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+// iPhoneはタップの瞬間に一度鳴らした要素でないと、あとから自動で再生できない
+function unlock(el) {
+  silentUrl ||= URL.createObjectURL(silentWav());
+  el.src = silentUrl;
+  el.play().catch(() => {});
+}
+
+function renderChunks() {
+  const list = $('#chunkList');
+  list.textContent = '';
+  const frag = document.createDocumentFragment();
+  for (const c of R.chunks) {
+    const li = document.createElement('li');
+    li.className = 'chunk';
+    for (const d of c.display) { const p = document.createElement('p'); p.textContent = d; li.append(p); }
+    frag.append(li);
+  }
+  list.append(frag);
+}
+$('#chunkList').addEventListener('click', (e) => {
+  const li = e.target.closest('.chunk');
+  if (!li || getSelection().toString()) return;
+  playIndex([...li.parentNode.children].indexOf(li));
+});
+let userScrollAt = 0;
+for (const ev of ['touchmove', 'wheel']) addEventListener(ev, () => { userScrollAt = Date.now(); }, { passive: true });
+
+function setNow(i, force) {
+  const items = $('#chunkList').children;
+  for (let k = 0; k < items.length; k++) { items[k].classList.toggle('now', k === i); items[k].classList.toggle('read', k < i); }
+  const li = items[i];
+  if (li && !$('#readView').hidden && (force || Date.now() - userScrollAt > 4000)) {
+    li.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }
+}
+function markChunk(i, state) { const li = $('#chunkList').children[i]; if (li) li.dataset.state = state; }
+
+function renderPlay() {
+  $('#playIcon').setAttribute('d', R.wantPlay ? 'M6.5 5h4v14h-4zM13.5 5h4v14h-4z' : 'M8 5.2v13.6L19 12z');
+  $('#playBtn').setAttribute('aria-label', R.wantPlay ? '一時停止' : '再生');
+  $('#playBtn').classList.toggle('waiting', R.waiting && R.wantPlay);
+}
+function setWaiting(on) {
+  R.waiting = on;
+  markChunk(R.idx, on ? 'loading' : (R.urls.has(R.idx) ? 'ready' : ''));
+  if (on) $('#playerStatus').textContent = '音声を作っています…';
+  renderPlay();
+}
+function statusText(done) {
+  const left = Math.max(1, Math.round((R.total - done) / CHARS_PER_MIN / settings.rate));
+  return `${R.idx + 1} / ${R.chunks.length}段落 ・ 残り約${fmtDur(left)}`;
+}
+function renderProgress() {
+  if (!R.chunks.length) return;
+  const playingThis = audio.currentSrc && audio.currentSrc === R.urls.get(R.idx);
+  const frac = playingThis && audio.duration ? audio.currentTime / audio.duration : 0;
+  const done = R.prefix[R.idx] + R.chunks[R.idx].chars * frac;
+  $('#progressFill').style.width = `${(done / R.total * 100).toFixed(2)}%`;
+  if (!R.waiting) $('#playerStatus').textContent = R.finished ? '最後まで読み上げました' : statusText(done);
+}
+function savePos() {
+  const t = audio.currentSrc === R.urls.get(R.idx) ? Math.floor(audio.currentTime) : 0;
+  store.set('pos', R.finished ? null : { h: R.textHash, i: R.idx, t });
+  R.savedAt = Date.now();
+}
+function updateMedia() {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: R.title || 'よみこえ', artist: `${R.idx + 1} / ${R.chunks.length}段落`, album: 'よみこえ',
+      artwork: [{ src: new URL('icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' }],
+    });
+  } catch {}
+}
+
+function startReading(text, from = 0, offset = 0) {
+  stopAll();
+  unlock(audio);
+  R.chunks = chunkText(text);
+  if (!R.chunks.length) { showNotice('読み上げる文章がありません。'); return; }
+  R.prefix = [];
+  R.total = 0;
+  for (const c of R.chunks) { R.prefix.push(R.total); R.total += c.chars; }
+  R.ctrl = new AbortController();
+  R.textHash = hash(text);
+  R.sig = hash(text + '\u0000' + settings.dict);
+  R.title = (R.chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
+  R.finished = false;
+  $('#docTitle').textContent = R.title;
+  renderChunks();
+  $('#player').hidden = false;
+  document.body.classList.add('has-player');
+  showView('read');
+  playIndex(Math.min(from, R.chunks.length - 1), offset);
+}
+function stopAll() {
+  R.ctrl?.abort();
+  R.token++;
+  R.wantPlay = false;
+  R.halted = false;
+  audio.pause();
+  for (const u of R.urls.values()) URL.revokeObjectURL(u);
+  R.urls.clear();
+  R.loads.clear();
+}
+
+function load(i) {
+  if (i < 0 || i >= R.chunks.length) return null;
+  if (R.loads.has(i)) return R.loads.get(i);
+  const ctrl = R.ctrl;
+  if (i !== R.idx) markChunk(i, 'loading');
+  const p = synth(R.chunks[i].speech, ctrl.signal).then((blob) => {
+    if (ctrl !== R.ctrl) return null;
+    const url = URL.createObjectURL(blob);
+    R.urls.set(i, url);
+    markChunk(i, 'ready');
+    return url;
+  }, (e) => {
+    if (ctrl === R.ctrl) { R.loads.delete(i); markChunk(i, e.name === 'AbortError' ? '' : 'error'); }
+    throw e;
+  });
+  R.loads.set(i, p);
+  p.then(() => prefetch(), (e) => { if (i !== R.idx && ctrl === R.ctrl) handleError(e); });
+  return p;
+}
+function prefetch() {
+  if (!R.ctrl || R.halted) return;
+  let busy = 0;
+  for (const i of R.loads.keys()) if (!R.urls.has(i)) busy++;
+  for (let i = R.idx; i <= R.idx + AHEAD && i < R.chunks.length && busy < PARALLEL; i++) {
+    if (!R.loads.has(i)) { load(i); busy++; }
+  }
+}
+function trimUrls() {
+  for (const [i, u] of R.urls) {
+    if (i < R.idx - 1 || i > R.idx + AHEAD + 1) { URL.revokeObjectURL(u); R.urls.delete(i); R.loads.delete(i); markChunk(i, ''); }
+  }
+}
+
+async function playIndex(i, offset = 0) {
+  if (i < 0 || i >= R.chunks.length) return;
+  const token = ++R.token;
+  R.idx = i;
+  R.wantPlay = true;
+  R.halted = false;
+  R.finished = false;
+  setNow(i);
+  updateMedia();
+  savePos();
+  setWaiting(!R.urls.has(i));
+  renderProgress();
+  let url;
+  try {
+    url = await load(i);
+  } catch (e) {
+    if (token !== R.token) return;
+    if (e.name === 'AbortError') { if (R.ctrl && !R.ctrl.signal.aborted) playIndex(i, offset); return; }
+    R.wantPlay = false;
+    setWaiting(false);
+    handleError(e);
+    return;
+  }
+  if (token !== R.token || !url) return;
+  setWaiting(false);
+  R.swapping = true;
+  audio.src = url;
+  audio.defaultPlaybackRate = audio.playbackRate = settings.rate;
+  if (offset) audio.addEventListener('loadedmetadata', () => { audio.currentTime = Math.min(offset, audio.duration || offset); }, { once: true });
+  if (R.wantPlay) {
+    try { await audio.play(); }
+    catch (e) {
+      if (token === R.token && e.name !== 'AbortError') { R.wantPlay = false; showNotice('再生ボタンを押すと始まります。'); }
+    }
+  }
+  R.swapping = false;
+  renderPlay();
+  renderProgress();
+  prefetch();
+  trimUrls();
+}
+
+function togglePlay() {
+  if (!R.chunks.length) return;
+  if (R.wantPlay) {
+    R.wantPlay = false;
+    audio.pause();
+    savePos();
+    renderPlay();
+    return;
+  }
+  const ready = !R.finished && audio.currentSrc && audio.currentSrc === R.urls.get(R.idx);
+  if (ready) {
+    R.wantPlay = true;
+    audio.play().catch(() => { R.wantPlay = false; renderPlay(); });
+    renderPlay();
+  } else {
+    unlock(audio);
+    playIndex(R.finished ? 0 : R.idx);
+  }
+}
+function prev() {
+  if (audio.currentSrc === R.urls.get(R.idx) && audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (R.idx > 0) playIndex(R.idx - 1);
+}
+function next() { if (R.idx + 1 < R.chunks.length) playIndex(R.idx + 1); }
+function skip(sec) {
+  if (audio.currentSrc !== R.urls.get(R.idx)) return;
+  audio.currentTime = Math.max(0, Math.min((audio.duration || 0) - 0.1, audio.currentTime + sec));
+}
+
+audio.addEventListener('ended', () => {
+  if (audio.currentSrc === silentUrl || !R.chunks.length || audio.currentSrc !== R.urls.get(R.idx)) return;
+  if (R.idx + 1 < R.chunks.length) { playIndex(R.idx + 1); return; }
+  R.wantPlay = false;
+  R.finished = true;
+  setNow(R.chunks.length);
+  savePos();
+  renderPlay();
+  renderProgress();
+});
+audio.addEventListener('pause', () => {
+  // ロック画面や電話で止まったときは、こちらの状態も止める
+  if (audio.ended || R.swapping || audio.currentSrc === silentUrl) return;
+  if (R.wantPlay && !R.waiting) { R.wantPlay = false; savePos(); renderPlay(); }
+});
+audio.addEventListener('play', () => {
+  if (audio.currentSrc === silentUrl) return;
+  audio.playbackRate = settings.rate;
+  if (!R.wantPlay) { R.wantPlay = true; renderPlay(); }
+});
+audio.addEventListener('timeupdate', () => {
+  if (audio.currentSrc === silentUrl) return;
+  renderProgress();
+  if (Date.now() - R.savedAt > 5000) savePos();
+});
+audio.addEventListener('error', () => {
+  if (!audio.currentSrc || audio.currentSrc === silentUrl || audio.currentSrc !== R.urls.get(R.idx)) return;
+  markChunk(R.idx, 'error');
+  R.wantPlay = false;
+  renderPlay();
+  showNotice('この段落の音声を再生できませんでした。', '次の段落へ', () => { hideNotice(); next(); });
+});
+
+function handleError(e) {
+  if (e.name === 'AbortError') return;
+  R.halted = true;
+  renderPlay();
+  if (e.kind === 'nokey' || e.kind === 'auth') {
+    showNotice(e.message, '設定を開く', () => { hideNotice(); openSettings(); });
+  } else if (e.kind === 'budget') {
+    showNotice(`${e.message}上限は設定で変えられます。`, '今回は続ける', () => { overBudgetOk = true; hideNotice(); resume(); });
+  } else {
+    showNotice(e.message, 'もう一度', () => { hideNotice(); resume(); });
+  }
+}
+function resume() {
+  R.halted = false;
+  if (!R.chunks.length) return;
+  if (audio.currentSrc === R.urls.get(R.idx) && !R.finished) prefetch();
+  else { unlock(audio); playIndex(R.idx); }
+}
+
+$('#playBtn').addEventListener('click', togglePlay);
+$('#prevBtn').addEventListener('click', prev);
+$('#nextBtn').addEventListener('click', next);
+$('#backBtn').addEventListener('click', () => skip(-10));
+$('#fwdBtn').addEventListener('click', () => skip(10));
+$('#rateBtn').textContent = fmtRate(settings.rate);
+$('#rateBtn').addEventListener('click', () => {
+  const k = RATES.findIndex((r) => r > settings.rate + 0.001);
+  settings.rate = RATES[k < 0 ? 0 : k];
+  saveSettings();
+  audio.playbackRate = settings.rate;
+  $('#rateBtn').textContent = fmtRate(settings.rate);
+  renderProgress();
+});
+if ('mediaSession' in navigator) {
+  const handlers = { play: () => { if (!R.wantPlay) togglePlay(); }, pause: () => { if (R.wantPlay) togglePlay(); }, previoustrack: prev, nexttrack: next };
+  for (const [action, fn] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} }
+}
+
+$('#startBtn').addEventListener('click', () => {
+  const text = textEl.value;
+  if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  if (R.chunks.length && hash(text + '\u0000' + settings.dict) === R.sig) {
+    showView('read');
+    if (!R.wantPlay) togglePlay();
+    return;
+  }
+  hideNotice();
+  startReading(text);
+});
+$('#resumeBtn').addEventListener('click', () => {
+  const pos = store.get('pos', null);
+  if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  hideNotice();
+  startReading(textEl.value, pos ? pos.i : 0, pos ? pos.t : 0);
+});
+$('#editBtn').addEventListener('click', () => showView('edit'));
+
+/* ---------- 設定 ---------- */
+const setDlg = $('#settings');
+function openSettings(msg) {
+  $('#setMsg').hidden = !msg;
+  $('#setMsg').textContent = msg || '';
+  $('#apiKey').value = settings.apiKey;
+  $('#geminiKey').value = settings.geminiKey;
+  $('#geminiStyle').value = settings.geminiStyle;
+  $('#budget').value = settings.budget;
+  $('#fx').value = settings.fx;
+  $('#price').value = settings.price;
+  $('#dict').value = settings.dict;
+  renderEngine();
+  renderUsage();
+  renderCache();
+  loadVoices();
+  setDlg.showModal();
+  if (!curKey()) $(settings.engine === 'gemini' ? '#geminiKey' : '#apiKey').focus();
+}
+function renderEngine() {
+  for (const r of document.querySelectorAll('input[name="engine"]')) r.checked = r.value === settings.engine;
+  for (const el of document.querySelectorAll('[data-engine]')) el.hidden = el.dataset.engine !== settings.engine;
+  for (const b of document.querySelectorAll('[data-grok]')) b.hidden = settings.engine !== 'xai';
+}
+$('#openSettings').addEventListener('click', () => openSettings());
+$('#closeSettings').addEventListener('click', () => setDlg.close());
+setDlg.addEventListener('click', (e) => { if (e.target === setDlg) setDlg.close(); });
+setDlg.addEventListener('close', () => {
+  scheduleEstimate();
+  if (R.halted && curKey()) resume();
+});
+
+$('#apiKey').addEventListener('input', (e) => {
+  settings.apiKey = e.target.value.trim();
+  saveSettings();
+  voicesLoaded = false;
+  $('#setMsg').hidden = true;
+});
+$('#apiKey').addEventListener('change', loadVoices);
+$('#geminiKey').addEventListener('input', (e) => {
+  settings.geminiKey = e.target.value.trim();
+  saveSettings();
+  $('#setMsg').hidden = true;
+});
+$('#geminiStyle').addEventListener('change', (e) => {
+  settings.geminiStyle = e.target.value;
+  saveSettings();
+  remakeAhead();
+});
+for (const b of document.querySelectorAll('[data-reveal]')) {
+  b.addEventListener('click', () => {
+    const k = $('#' + b.dataset.reveal);
+    k.type = k.type === 'password' ? 'text' : 'password';
+    b.textContent = k.type === 'password' ? '表示' : '隠す';
+  });
+}
+for (const r of document.querySelectorAll('input[name="engine"]')) {
+  r.addEventListener('change', () => {
+    settings.engine = r.value;
+    saveSettings();
+    $('#setMsg').hidden = true;
+    renderEngine();
+    renderUsage();
+    loadVoices();
+    remakeAhead();
+  });
+}
+for (const id of ['budget', 'fx', 'price']) {
+  $('#' + id).addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    if (Number.isFinite(v) && v >= 0) { settings[id] = v; saveSettings(); renderUsage(); }
+  });
+}
+$('#dict').addEventListener('input', (e) => { settings.dict = e.target.value; saveSettings(); });
+$('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0 }); renderUsage(); });
+$('#clearCache').addEventListener('click', async () => {
+  if (!confirm('保存した音声をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
+  await cacheClear();
+  renderCache();
+});
+
+function renderUsage() {
+  const t = $('#usageText');
+  if (!t) return;
+  const u = usage(), y = costYen(u);
+  t.innerHTML = `Gemini ${fmtNum(u.gemini)}字（無料）<br>Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
+  const ratio = settings.budget ? y / settings.budget : 1;
+  $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
+  $('#usageMeter').classList.toggle('over', ratio >= 1);
+}
+async function renderCache() {
+  const mb = (await cacheSize()) / 1048576;
+  $('#cacheText').textContent = `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}
+
+let voicesLoaded = false;
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+function fillVoices() {
+  const sel = $('#voice');
+  sel.textContent = '';
+  if (settings.engine === 'gemini') {
+    for (const [label, g] of [['女性', 'f'], ['男性', 'm']]) {
+      const group = document.createElement('optgroup');
+      group.label = label;
+      for (const [name, [gender, feel]] of Object.entries(GEMINI_VOICES)) if (gender === g) group.append(new Option(`${name}（${feel}）`, name));
+      sel.append(group);
+    }
+  } else {
+    for (const v of store.get('voices', VOICES.map((id) => ({ id, name: capitalize(id) })))) sel.add(new Option(v.name, v.id));
+  }
+  if (![...sel.options].some((o) => o.value === curVoice())) sel.add(new Option(curVoice(), curVoice()));
+  sel.value = curVoice();
+}
+async function loadVoices() {
+  fillVoices();
+  if (settings.engine !== 'xai' || voicesLoaded || !settings.apiKey) return;
+  try {
+    const res = await fetch(`${API}/tts/voices`, { headers: { Authorization: `Bearer ${settings.apiKey}` } });
+    if (!res.ok) return;
+    const list = ((await res.json()).voices || []).map((v) => ({ id: v.voice_id, name: v.name || v.voice_id })).filter((v) => v.id);
+    if (list.length) { voicesLoaded = true; store.set('voices', list); if (settings.engine === 'xai') fillVoices(); }
+  } catch {}
+}
+$('#voice').addEventListener('change', (e) => {
+  settings[settings.engine === 'gemini' ? 'geminiVoice' : 'voice'] = e.target.value;
+  saveSettings();
+  remakeAhead();
+});
+// 先読みしていた分を、新しい声で作り直す
+function remakeAhead() {
+  if (!R.ctrl) return;
+  R.ctrl.abort();
+  R.ctrl = new AbortController();
+  const keep = audio.currentSrc === R.urls.get(R.idx) ? R.idx : -1;
+  for (const [i, u] of R.urls) if (i !== keep) { URL.revokeObjectURL(u); R.urls.delete(i); markChunk(i, ''); }
+  for (const i of [...R.loads.keys()]) if (i !== keep) R.loads.delete(i);
+  if (keep < 0 && R.wantPlay) playIndex(R.idx);
+  else prefetch();
+}
+
+const previewAudio = new Audio();
+$('#previewBtn').addEventListener('click', async () => {
+  const btn = $('#previewBtn');
+  unlock(previewAudio);
+  if (R.wantPlay) togglePlay();
+  btn.disabled = true;
+  btn.textContent = '作成中…';
+  $('#setMsg').hidden = true;
+  try {
+    const blob = await synth(PREVIEW_TEXT);
+    previewAudio.src = URL.createObjectURL(blob);
+    await previewAudio.play();
+  } catch (e) {
+    $('#setMsg').textContent = e.message;
+    $('#setMsg').hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '試聴';
+  }
+});
+
+/* ---------- 書き出し ---------- */
+// 段落ごとのMP3をつなぐ前に、先頭のタグと長さ情報のフレームを外す（残すと再生時間が最初の段落分に見えてしまう）
+function mp3FrameLength(u8, i) {
+  const ver = (u8[i + 1] >> 3) & 3, layer = (u8[i + 1] >> 1) & 3, bri = u8[i + 2] >> 4, sri = (u8[i + 2] >> 2) & 3, pad = (u8[i + 2] >> 1) & 1;
+  if (ver === 1 || layer !== 1 || bri === 0 || bri === 15 || sri === 3) return 0;
+  const br = (ver === 3 ? [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320] : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160])[bri] * 1000;
+  const sr = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] }[ver][sri];
+  return Math.floor((ver === 3 ? 144 : 72) * br / sr) + pad;
+}
+function mp3Body(u8) {
+  let s = 0, e = u8.length;
+  while (e - s > 10 && u8[s] === 0x49 && u8[s + 1] === 0x44 && u8[s + 2] === 0x33) {
+    const size = ((u8[s + 6] & 0x7f) << 21) | ((u8[s + 7] & 0x7f) << 14) | ((u8[s + 8] & 0x7f) << 7) | (u8[s + 9] & 0x7f);
+    s += 10 + size + (u8[s + 5] & 0x10 ? 10 : 0);
+  }
+  if (e - s > 128 && u8[e - 128] === 0x54 && u8[e - 127] === 0x41 && u8[e - 126] === 0x47) e -= 128;
+  while (s < e - 4 && !(u8[s] === 0xff && (u8[s + 1] & 0xe0) === 0xe0)) s++;
+  const len = mp3FrameLength(u8, s);
+  if (len) {
+    const mpeg1 = ((u8[s + 1] >> 3) & 3) === 3, mono = (u8[s + 3] >> 6) === 3;
+    const at = s + 4 + (mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17));
+    const tag = String.fromCharCode(u8[at], u8[at + 1], u8[at + 2], u8[at + 3]);
+    const vbri = String.fromCharCode(u8[s + 36], u8[s + 37], u8[s + 38], u8[s + 39]);
+    if (tag === 'Xing' || tag === 'Info' || vbri === 'VBRI') s += len;
+  }
+  return u8.subarray(s, e);
+}
+
+// WAV（Gemini）は各段落から音の部分だけを取り出してつなぎ、全体に1つだけヘッダーを付ける
+function wavParts(u8) {
+  const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let p = 12, fmt = null;
+  while (p + 8 <= u8.length) {
+    const id = String.fromCharCode(u8[p], u8[p + 1], u8[p + 2], u8[p + 3]);
+    let size = view.getUint32(p + 4, true);
+    if (id === 'data') {
+      if (p + 8 + size > u8.length || size === 0) size = u8.length - p - 8;
+      return { fmt, data: u8.subarray(p + 8, p + 8 + size) };
+    }
+    if (id === 'fmt ') fmt = u8.subarray(p + 8, p + 8 + size);
+    p += 8 + size + (size & 1);
+  }
+  return { fmt, data: new Uint8Array(0) };
+}
+function wavHeader(fmt, total) {
+  const head = new Uint8Array(28 + fmt.length), v = new DataView(head.buffer);
+  const w = (o, str) => { for (let i = 0; i < 4; i++) head[o + i] = str.charCodeAt(i); };
+  w(0, 'RIFF'); v.setUint32(4, 20 + fmt.length + total, true); w(8, 'WAVE');
+  w(12, 'fmt '); v.setUint32(16, fmt.length, true); head.set(fmt, 20);
+  w(20 + fmt.length, 'data'); v.setUint32(24 + fmt.length, total, true);
+  return head;
+}
+
+const expDlg = $('#exportDlg');
+let exp = null;
+async function openExport() {
+  if (!R.chunks.length) return;
+  const keys = await cacheKeys();
+  const fresh = R.chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech)) ? 0 : c.chars), 0);
+  const yen = extraYen(fresh);
+  const mins = Math.max(1, Math.round(R.total / CHARS_PER_MIN));
+  $('#expInfo').textContent = `全${R.chunks.length}段落・約${fmtDur(mins)}の音声を、1つの音声ファイルにまとめます。`
+    + (fresh ? `まだ作っていない${fmtNum(fresh)}字分（${yen ? `約${fmtYen(yen)}` : '無料枠の範囲内'}）を新しく作ります。` : 'すべて作成済みなので、料金はかかりません。')
+    + (settings.engine === 'gemini' && mins > 60 ? 'Geminiの音声は大きい（1時間で約170MB）ので、長すぎると保存できないことがあります。' : '')
+    + (mins > 180 ? '長いので、まとめるのに数分かかることがあります。' : '');
+  $('#expFill').style.width = '0';
+  $('#expMsg').hidden = true;
+  $('#expStart').hidden = false;
+  $('#expStart').disabled = false;
+  $('#expSave').hidden = true;
+  expDlg.showModal();
+}
+async function runExport() {
+  const ctrl = new AbortController();
+  const chunks = R.chunks, n = chunks.length, parts = new Array(n);
+  let next = 0, done = 0;
+  exp = { ctrl, url: null };
+  $('#expStart').disabled = true;
+  const worker = async () => {
+    while (next < n && !ctrl.signal.aborted) {
+      const i = next++;
+      const blob = await synth(chunks[i].speech, ctrl.signal);
+      parts[i] = new Uint8Array(await blob.arrayBuffer());
+      $('#expFill').style.width = `${(++done / n * 100).toFixed(1)}%`;
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: PARALLEL }, worker));
+  } catch (e) {
+    ctrl.abort();
+    if (e.name === 'AbortError') return;
+    $('#expMsg').textContent = e.message;
+    $('#expMsg').hidden = false;
+    $('#expStart').disabled = false;
+    return;
+  }
+  const wav = audioType(parts[0].buffer) === 'audio/wav';
+  let file;
+  if (wav) {
+    const ps = parts.map(wavParts);
+    const pcm = ps.map((x) => x.data);
+    file = new Blob([wavHeader(ps[0].fmt, pcm.reduce((a, d) => a + d.length, 0)), ...pcm], { type: 'audio/wav' });
+  } else {
+    file = new Blob(parts.map(mp3Body), { type: 'audio/mpeg' });
+  }
+  exp.url = URL.createObjectURL(file);
+  const a = $('#expSave');
+  a.href = exp.url;
+  a.download = `${(R.title || 'よみこえ').replace(/[\\/:*?"<>|（）()「」\s]+/g, '_').slice(0, 30)}.${wav ? 'wav' : 'mp3'}`;
+  a.hidden = false;
+  $('#expStart').hidden = true;
+  const mb = file.size / 1048576;
+  $('#expInfo').textContent = `できました（${mb < 1 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${mb.toFixed(1)} MB`}）。「ファイルを保存」を押すと、iPhoneの「ファイル」アプリに保存されます。`;
+}
+$('#exportBtn').addEventListener('click', openExport);
+$('#expStart').addEventListener('click', runExport);
+$('#expClose').addEventListener('click', () => expDlg.close());
+expDlg.addEventListener('close', () => {
+  exp?.ctrl.abort();
+  if (exp?.url) setTimeout(() => URL.revokeObjectURL(exp.url), 60000);
+  exp = null;
+});
+
+/* ---------- 起動 ---------- */
+renderEngine();
+scheduleEstimate();
+if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
