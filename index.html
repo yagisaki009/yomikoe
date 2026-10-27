@@ -130,8 +130,17 @@ body.has-player main { padding-bottom: 190px; }
   padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 .player > * { max-width: 720px; margin-inline: auto; }
-.progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.seek { position: relative; display: flex; align-items: center; height: 22px; margin-top: -6px; cursor: pointer; touch-action: none; }
+.seek:focus-visible { outline-offset: 0; border-radius: 4px; }
+.progress { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; transition: height .15s; }
 #progressFill { height: 100%; width: 0; background: var(--accent); transition: width .4s linear; }
+.seek .thumb {
+  position: absolute; top: 50%; left: 0; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); transform: translate(-50%, -50%); transition: width .15s, height .15s; pointer-events: none;
+}
+.seek:hover .progress, .seek.dragging .progress { height: 6px; }
+.seek:hover .thumb, .seek.dragging .thumb { width: 16px; height: 16px; }
+.seek.dragging #progressFill { transition: none; }
 .player-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
 .status { margin: 0; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .rate { flex: none; border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 3px 10px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -276,7 +285,10 @@ input, select, textarea {
 </main>
 
 <div id="player" class="player" hidden>
-  <div class="progress"><div id="progressFill"></div></div>
+  <div id="seek" class="seek" role="slider" tabindex="0" aria-label="再生位置" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="progress"><div id="progressFill"></div></div>
+    <div id="seekThumb" class="thumb"></div>
+  </div>
   <div class="player-row">
     <p id="playerStatus" class="status"></p>
     <button type="button" id="rateBtn" class="rate" aria-label="再生速度">1.0×</button>
@@ -962,13 +974,81 @@ function statusText(done) {
   return `${R.idx + 1} / ${R.chunks.length}段落 ・ 残り約${fmtDur(left)}`;
 }
 function renderProgress() {
-  if (!R.chunks.length) return;
+  if (!R.chunks.length || seeking !== null) return;
   const playingThis = audio.currentSrc && audio.currentSrc === R.urls.get(R.idx);
   const frac = playingThis && audio.duration ? audio.currentTime / audio.duration : 0;
-  const done = R.prefix[R.idx] + R.chunks[R.idx].chars * frac;
-  $('#progressFill').style.width = `${(done / R.total * 100).toFixed(2)}%`;
+  const done = R.finished ? R.total : R.prefix[R.idx] + R.chunks[R.idx].chars * frac;
+  showSeekAt(done / R.total);
   if (!R.waiting) $('#playerStatus').textContent = R.finished ? '最後まで読み上げました' : statusText(done);
 }
+
+/* ---------- 再生位置のバー：クリック・ドラッグで好きな位置へ ---------- */
+// 全体の文字数を基準に、どの段落の、段落の中のどのあたりかを決める
+const seekEl = $('#seek');
+let seeking = null; // ドラッグ中の位置（0〜1）
+function showSeekAt(frac) {
+  const pct = `${(frac * 100).toFixed(2)}%`;
+  $('#progressFill').style.width = pct;
+  $('#seekThumb').style.left = pct;
+  seekEl.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+}
+function seekTarget(frac) {
+  const target = Math.min(R.total - 1, Math.max(0, frac * R.total));
+  let i = R.chunks.findIndex((c, k) => target < R.prefix[k] + c.chars);
+  if (i < 0) i = R.chunks.length - 1;
+  return { i, within: R.chunks[i].chars ? (target - R.prefix[i]) / R.chunks[i].chars : 0 };
+}
+function fracAt(e) {
+  const r = seekEl.querySelector('.progress').getBoundingClientRect();
+  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+}
+function previewSeek(frac) {
+  showSeekAt(frac);
+  const { i } = seekTarget(frac);
+  const mins = Math.round(frac * R.total / CHARS_PER_MIN / settings.rate);
+  $('#playerStatus').textContent = `${i + 1} / ${R.chunks.length}段落へ ・ 約${fmtDur(mins)}の位置`;
+}
+function seekTo(frac) {
+  if (!R.chunks.length) return;
+  const { i, within } = seekTarget(frac);
+  if (i === R.idx && audio.currentSrc === R.urls.get(i) && audio.duration) {
+    audio.currentTime = within * audio.duration;
+    R.finished = false;
+    savePos();
+    renderProgress();
+    return;
+  }
+  // 止めているときは止めたまま移る
+  playIndex(i, 0, within, R.wantPlay);
+}
+seekEl.addEventListener('pointerdown', (e) => {
+  if (!R.chunks.length || e.button > 0) return;
+  seekEl.setPointerCapture(e.pointerId);
+  seekEl.classList.add('dragging');
+  seeking = fracAt(e);
+  previewSeek(seeking);
+});
+seekEl.addEventListener('pointermove', (e) => {
+  if (seeking === null) return;
+  seeking = fracAt(e);
+  previewSeek(seeking);
+});
+seekEl.addEventListener('pointerup', () => {
+  if (seeking === null) return;
+  const frac = seeking;
+  seeking = null;
+  seekEl.classList.remove('dragging');
+  seekTo(frac);
+});
+seekEl.addEventListener('pointercancel', () => {
+  seeking = null;
+  seekEl.classList.remove('dragging');
+  renderProgress();
+});
+seekEl.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { skip(e.key === 'ArrowLeft' ? -10 : 10); e.preventDefault(); }
+  else if (e.key === ' ') { togglePlay(); e.preventDefault(); } // バーをクリックした後もスペースで再生・一時停止できるように
+});
 function savePos() {
   const t = audio.currentSrc === R.urls.get(R.idx) ? Math.floor(audio.currentTime) : 0;
   store.set('pos', R.finished ? null : { h: R.textHash, i: R.idx, t });
@@ -1073,11 +1153,11 @@ function trimUrls() {
   }
 }
 
-async function playIndex(i, offset = 0) {
+async function playIndex(i, offset = 0, frac = 0, play = true) {
   if (i < 0 || i >= R.chunks.length) return;
   const token = ++R.token;
   R.idx = i;
-  R.wantPlay = true;
+  R.wantPlay = play;
   R.halted = false;
   R.finished = false;
   setNow(i);
@@ -1090,7 +1170,7 @@ async function playIndex(i, offset = 0) {
     url = await load(i);
   } catch (e) {
     if (token !== R.token) return;
-    if (e.name === 'AbortError') { if (R.ctrl && !R.ctrl.signal.aborted) playIndex(i, offset); return; }
+    if (e.name === 'AbortError') { if (R.ctrl && !R.ctrl.signal.aborted) playIndex(i, offset, frac, play); return; }
     R.wantPlay = false;
     setWaiting(false);
     handleError(e);
@@ -1101,7 +1181,12 @@ async function playIndex(i, offset = 0) {
   R.swapping = true;
   audio.src = url;
   audio.defaultPlaybackRate = audio.playbackRate = settings.rate;
-  if (offset) audio.addEventListener('loadedmetadata', () => { audio.currentTime = Math.min(offset, audio.duration || offset); }, { once: true });
+  if (offset || frac) {
+    audio.addEventListener('loadedmetadata', () => {
+      audio.currentTime = offset ? Math.min(offset, audio.duration || offset) : frac * (audio.duration || 0);
+      renderProgress();
+    }, { once: true });
+  }
   if (R.wantPlay) {
     try { await audio.play(); }
     catch (e) {
@@ -1201,6 +1286,14 @@ $('#prevBtn').addEventListener('click', prev);
 $('#nextBtn').addEventListener('click', next);
 $('#backBtn').addEventListener('click', () => skip(-10));
 $('#fwdBtn').addEventListener('click', () => skip(10));
+// Macのキーボード：スペースで再生・一時停止、←→で10秒戻る・進む（文字を入力しているときやボタン・バーを選んでいるときは、そちらに任せる）
+document.addEventListener('keydown', (e) => {
+  if (!R.chunks.length || $('#player').hidden || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target instanceof Element && e.target.closest('input, textarea, select, button, a, [role="slider"], dialog')) return;
+  if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); skip(-10); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); skip(10); }
+});
 $('#rateBtn').textContent = fmtRate(settings.rate);
 $('#rateBtn').addEventListener('click', () => {
   const k = RATES.findIndex((r) => r > settings.rate + 0.001);
