@@ -501,6 +501,16 @@ function usage() {
 }
 function addUsage(engine, n) { const u = usage(); u[engine] = Math.max(0, u[engine] + n); store.set('usage', u); renderUsage(); }
 const costYen = (u) => u.xai * settings.price / 1e6 * settings.fx;
+const geminiDay = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+function geminiToday() { const d = store.get('geminiDay', null); return d && d.day === geminiDay() ? d : { day: geminiDay(), n: 0 }; }
+function countGeminiRequest() { const d = geminiToday(); d.n++; store.set('geminiDay', d); }
+// 上限に達したときの回数を覚えておき、次から目安として見せる
+function noteQuotaHit() { const d = geminiToday(); store.set('quotaHit', { day: d.day, n: d.n }); }
+function geminiDayLine() {
+  const today = geminiToday(), hit = store.get('quotaHit', null);
+  if (hit && hit.day === today.day) return `今日の無料枠は使い切りました（この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
+  return `今日この端末で使った回数 ${today.n}回${hit ? `（前回は${hit.n}回で上限に達しました）` : ''} ・ 毎日16〜17時ごろに0に戻ります`;
+}
 function extraYen(n, engine = settings.engine) { const u = usage(), before = costYen(u); u[engine] += n; return costYen(u) - before; }
 const fmtNum = (n) => Math.round(n).toLocaleString('ja-JP');
 const fmtYen = (y) => (y <= 0 ? '0円' : y < 10 ? `${y.toFixed(1)}円` : `${fmtNum(y)}円`);
@@ -673,6 +683,7 @@ async function synth(text, signal, p = curProfile()) {
           const b64 = findAudio(await res.json());
           if (!b64) throw new TtsError('bad', 'Geminiから音声が返ってきませんでした。');
           buf = base64ToBuffer(b64);
+          countGeminiRequest();
         } else {
           buf = await res.arrayBuffer();
         }
@@ -681,7 +692,10 @@ async function synth(text, signal, p = curProfile()) {
       }
       const raw = await res.text().catch(() => '');
       const detail = errorDetail(raw);
-      if (res.status === 429 && engine === 'gemini' && /per[ _]?day/i.test(raw)) throw new TtsError('quota', '今日のGeminiの無料枠を使い切りました。毎日、日本時間の16〜17時ごろに回復します。');
+      if (res.status === 429 && engine === 'gemini' && /per[ _]?day/i.test(raw)) {
+        noteQuotaHit();
+        throw new TtsError('quota', '今日のGeminiの無料枠を使い切りました。毎日、日本時間の16〜17時ごろに回復します。');
+      }
       // 無料枠は1分あたりの回数にも上限があるので、言われた時間だけ待ってやり直す
       if ((res.status === 429 || res.status >= 500) && attempt < (engine === 'gemini' ? 6 : 3)) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
       if (engine === 'gemini') {
@@ -902,9 +916,7 @@ async function renderEstimate() {
   $('#resumeBtn').hidden = !resumable;
   if (resumable) $('#resumeBtn').textContent = `続きから（${pos.i + 1}段落目）`;
   const u = usage();
-  const used = settings.engine === 'gemini'
-    ? `今月のGemini ${fmtNum(u.gemini)}字（無料枠・1日の回数に上限あり）`
-    : `今月 ${fmtYen(costYen(u))} / ${fmtNum(settings.budget)}円`;
+  const used = settings.engine === 'gemini' ? geminiDayLine() : `今月 ${fmtYen(costYen(u))} / ${fmtNum(settings.budget)}円`;
   if (!total) { $('#estimate').textContent = `文章を入れると、読み上げ時間と料金の目安が出ます。${used}`; return; }
   const keys = await cacheKeys();
   const fresh = chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech)) ? 0 : c.chars), 0);
@@ -912,7 +924,11 @@ async function renderEstimate() {
   const mins = Math.max(1, Math.round(total / CHARS_PER_MIN / settings.rate));
   const note = settings.engine === 'gemini' && fresh ? '（無料枠）' : fresh < total ? '（作成済みの部分は無料）' : '';
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
-  $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ 料金の目安 <b>${fmtYen(yen)}</b>${note}${skipped}<br>${used}`;
+  const needed = chunks.filter((c) => !keys.has(keyFor(c.speech))).length;
+  const cost = settings.engine === 'gemini'
+    ? (needed ? `Geminiに送る回数 約<b>${needed}</b>回（無料）` : '作成済みなので回数を使いません')
+    : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
+  $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
 
 const textEl = $('#text');
@@ -1506,7 +1522,7 @@ function renderUsage() {
   const t = $('#usageText');
   if (!t) return;
   const u = usage(), y = costYen(u);
-  t.innerHTML = `Gemini ${fmtNum(u.gemini)}字（無料）<br>Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
+  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）<br>Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
   $('#usageMeter').classList.toggle('over', ratio >= 1);
