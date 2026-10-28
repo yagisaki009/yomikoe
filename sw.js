@@ -18,11 +18,12 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  const isFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
-  if (url.origin !== location.origin && !isFont) return;
+  // フォントと、音声をMP3に圧縮する部品（lamejs）も手元に置いておく
+  const isLib = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com' || url.hostname === 'cdn.jsdelivr.net';
+  if (url.origin !== location.origin && !isLib) return;
   // アプリのファイルは毎回GitHubに新しい版がないか確かめる（変わっていなければ通信はわずか）。
   // ブラウザの一時保存に任せると、更新が届くまで最大10分かかるため
-  const fresh = isFont ? fetch(req) : fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' });
+  const fresh = isLib ? fetch(req) : fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' });
   e.respondWith(
     fresh
       .then((res) => {

@@ -301,7 +301,7 @@ input, select, textarea {
       <h1>履歴</h1>
       <span aria-hidden="true"></span>
     </div>
-    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても料金はかかりません（保存が1GBを超えると、古い音声から消えます）。</p>
+    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても料金はかかりません（保存が<span class="cache-limit">3GB</span>を超えると、古い音声から消えます。上限は設定で変えられます）。</p>
     <p id="histEmpty" class="hist-empty" hidden>まだ履歴はありません。<br>文章を読み上げると、ここに残ります。</p>
     <ul id="histList" class="hist"></ul>
   </section>
@@ -414,6 +414,10 @@ input, select, textarea {
         <p id="cacheText" class="usage"></p>
         <button type="button" id="clearCache" class="btn ghost small">すべて削除</button>
       </div>
+      <div class="money">
+        <label>保存の上限<select id="cacheGB"><option value="1">1 GB</option><option value="2">2 GB</option><option value="3">3 GB</option><option value="5">5 GB</option><option value="10">10 GB</option></select><span id="cacheHours"></span></label>
+      </div>
+      <p class="hint">Geminiの音声は、届いた後でMP3に圧縮して保存します（1時間で約29MB。上の時間はGeminiで聞いた場合の目安です）。上限を超えると、古い音声から消えます。iPhoneの空き容量が少ないときは、上限を小さめにしてください。</p>
     </section>
   </div>
 </dialog>
@@ -481,7 +485,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -563,12 +567,15 @@ const docPut = (doc) => idbStore('docs', 'readwrite', (s) => s.put(doc));
 const docAll = async () => ((await idbStore('docs', 'readonly', (s) => s.getAll())) || []).sort((a, b) => b.updatedAt - a.updatedAt);
 const textGet = (id) => idbStore('texts', 'readonly', (s) => s.get(id));
 const cacheGet = (k) => idb('readonly', (s) => s.get(k));
-const cachePut = (k, buf) => idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then(trimCache);
-// Geminiの音声は圧縮されていない（1時間で約170MB）ので、保存量が1GBを超えたら古いものから消す
-const CACHE_LIMIT = 1024 * 1048576, CACHE_KEEP = 800 * 1048576;
+const cachePut = (k, buf) => idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then(() => {
+  if (audioType(buf) === 'audio/wav') { wavKeys.add(k); saveWavKeys(); squeezeAll(); }
+  return trimCache();
+});
+// 保存量が上限（設定で選ぶ）を超えたら、古いものから消して8割まで減らす
+const cacheLimit = () => settings.cacheGB * 1073741824;
 let trimmedAt = 0;
-async function trimCache() {
-  if (Date.now() - trimmedAt < 60000) return;
+async function trimCache(force = false) {
+  if (!force && Date.now() - trimmedAt < 60000) return;
   trimmedAt = Date.now();
   const db = await openDb();
   if (!db) return;
@@ -581,15 +588,15 @@ async function trimCache() {
     } catch { resolve(list); }
   });
   let total = items.reduce((a, it) => a + it[1], 0);
-  if (total <= CACHE_LIMIT) return;
+  if (total <= cacheLimit()) return;
   items.sort((a, b) => a[2] - b[2]);
   const drop = [];
-  for (const [k, size] of items) { if (total <= CACHE_KEEP) break; drop.push(k); total -= size; }
+  for (const [k, size] of items) { if (total <= cacheLimit() * 0.8) break; drop.push(k); total -= size; }
   await idb('readwrite', (s) => { for (const k of drop) s.delete(k); return null; });
 }
 const audioType = (buf) => (new Uint8Array(buf, 0, 4).join() === '82,73,70,70' ? 'audio/wav' : 'audio/mpeg');
 const toBlob = (buf) => new Blob([buf], { type: audioType(buf) });
-const cacheClear = () => Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear())));
+const cacheClear = () => { wavKeys.clear(); saveWavKeys(); return Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear()))); };
 const cacheKeys = async () => new Set((await idb('readonly', (s) => s.getAllKeys())) || []);
 async function cacheSize() {
   const db = await openDb();
@@ -602,6 +609,103 @@ async function cacheSize() {
       req.onerror = () => resolve(total);
     } catch { resolve(0); }
   });
+}
+
+/* ---------- 音声の圧縮（Gemini） ---------- */
+// Geminiの音声は圧縮されていないWAV（1時間で約170MB）なので、保存した後でMP3（約29MB）に置き換える。
+// 再生は届いたWAVですぐに始め、変換は別の処理（Worker）で行う。キーは変えないので、履歴からはそのまま使える
+const LAME_URL = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+const LAME_SRI = 'sha384-xuasJXVcyv3hZq0eYpelEkBC8l4yufatZXDsKuyCU2rqfhDCb+ftuE/mSfZAteiK';
+const MP3_KBPS = 64;
+function mp3Worker() {
+  onmessage = ({ data: { id, pcm, rate, kbps } }) => {
+    try {
+      const enc = new lamejs.Mp3Encoder(1, rate, kbps), out = [];
+      for (let i = 0; i < pcm.length; i += 11520) { const b = enc.encodeBuffer(pcm.subarray(i, i + 11520)); if (b.length) out.push(b); }
+      const f = enc.flush();
+      if (f.length) out.push(f);
+      const mp3 = new Uint8Array(out.reduce((a, b) => a + b.length, 0));
+      let o = 0;
+      for (const b of out) { mp3.set(new Uint8Array(b.buffer, b.byteOffset, b.length), o); o += b.length; }
+      postMessage({ id, mp3: mp3.buffer }, [mp3.buffer]);
+    } catch (e) { postMessage({ id, error: String(e) }); }
+  };
+}
+let encoderPromise = null, encodeId = 0;
+const encodeJobs = new Map();
+function encoder() {
+  encoderPromise ||= fetch(LAME_URL, { integrity: LAME_SRI })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then((lame) => {
+      const w = new Worker(URL.createObjectURL(new Blob([lame, `\n(${mp3Worker})();`], { type: 'text/javascript' })));
+      w.onmessage = ({ data }) => { encodeJobs.get(data.id)?.(data.mp3 || null); encodeJobs.delete(data.id); };
+      w.onerror = () => { for (const done of encodeJobs.values()) done(null); encodeJobs.clear(); encoderPromise = null; w.terminate(); };
+      return w;
+    })
+    .catch((e) => { encoderPromise = null; throw e; });
+  return encoderPromise;
+}
+// 変換できない形のWAVや、変換に失敗したときは null。変換の部品を読み込めない（電波がない等）ときは失敗にする
+async function toMp3(buf) {
+  const { fmt, data } = wavParts(new Uint8Array(buf));
+  if (!fmt || fmt.length < 16 || data.length < 2) return null;
+  const f = new DataView(fmt.buffer, fmt.byteOffset, fmt.byteLength);
+  if (f.getUint16(0, true) !== 1 || f.getUint16(2, true) !== 1 || f.getUint16(14, true) !== 16) return null;
+  const w = await encoder();
+  const pcm = new Int16Array(data.slice(0, data.length & ~1).buffer);
+  return new Promise((resolve) => {
+    const id = ++encodeId;
+    encodeJobs.set(id, resolve);
+    w.postMessage({ id, pcm, rate: f.getUint32(4, true), kbps: MP3_KBPS }, [pcm.buffer]);
+  });
+}
+// まだWAVのまま保存されている音声のキー。アプリを閉じても続きから変換できるよう覚えておく
+const wavKeys = new Set(store.get('wavKeys', []));
+const saveWavKeys = () => store.set('wavKeys', [...wavKeys]);
+async function squeeze(k, buf) {
+  const mp3 = await toMp3(buf);
+  if (mp3) {
+    // 変換している間に消されたり置き換えられたりしていなければ、MP3に差し替える（古さの順番は元のまま）
+    await idb('readwrite', (s) => {
+      const req = s.get(k);
+      req.onsuccess = () => { const v = req.result; if (v?.buf && audioType(v.buf) === 'audio/wav') s.put({ buf: mp3, size: mp3.byteLength, ts: v.ts }, k); };
+      return null;
+    });
+  }
+  wavKeys.delete(k);
+  saveWavKeys();
+  return mp3 || buf;
+}
+let squeezing = false;
+async function squeezeAll() {
+  if (squeezing) return;
+  squeezing = true;
+  try {
+    while (wavKeys.size) {
+      const k = wavKeys.values().next().value;
+      const v = await cacheGet(k);
+      if (v?.buf && audioType(v.buf) === 'audio/wav') await squeeze(k, v.buf);
+      else { wavKeys.delete(k); saveWavKeys(); }
+    }
+  } catch {
+    // 変換の部品を読み込めないときは、次に音声を作ったときかアプリを開いたときにやり直す
+  } finally {
+    squeezing = false;
+  }
+}
+// 圧縮を始める前に保存した音声を、一度だけ探して変換の順番待ちに入れる
+async function findOldWav() {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise((resolve) => {
+    try {
+      const req = db.transaction('audio').objectStore('audio').openCursor();
+      req.onsuccess = () => { const c = req.result; if (c) { if (c.value?.buf && audioType(c.value.buf) === 'audio/wav') wavKeys.add(c.key); c.continue(); } else resolve(); };
+      req.onerror = () => resolve();
+    } catch { resolve(); }
+  });
+  saveWavKeys();
+  store.set('wavScanned', true);
 }
 
 /* ---------- 読み上げ（Gemini / xAI） ---------- */
@@ -1527,10 +1631,22 @@ function renderUsage() {
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
   $('#usageMeter').classList.toggle('over', ratio >= 1);
 }
-async function renderCache() {
-  const mb = (await cacheSize()) / 1048576;
-  $('#cacheText').textContent = `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+function renderLimit() {
+  $('#cacheGB').value = String(settings.cacheGB);
+  // GeminiのMP3（64kbps）は1時間で約29MB
+  $('#cacheHours').textContent = `約${fmtNum(settings.cacheGB * 1073741824 / (MP3_KBPS * 450000))}時間分`;
+  $('.cache-limit').textContent = `${settings.cacheGB}GB`;
 }
+async function renderCache() {
+  renderLimit();
+  const mb = (await cacheSize()) / 1048576;
+  $('#cacheText').textContent = `保存している音声 ${mb < 10 ? mb.toFixed(1) : fmtNum(mb)} MB`;
+}
+$('#cacheGB').addEventListener('change', (e) => {
+  settings.cacheGB = Number(e.target.value);
+  saveSettings();
+  trimCache(true).then(renderCache);
+});
 
 let voicesLoaded = false;
 const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -1818,7 +1934,6 @@ async function openExport() {
   const mins = Math.max(1, Math.round(R.total / CHARS_PER_MIN));
   $('#expInfo').textContent = `全${R.chunks.length}段落・約${fmtDur(mins)}の音声を、1つの音声ファイルにまとめます。`
     + (fresh ? `まだ作っていない${fmtNum(fresh)}字分（${yen ? `約${fmtYen(yen)}` : '無料枠の範囲内'}）を新しく作ります。` : 'すべて作成済みなので、料金はかかりません。')
-    + (R.profile.engine === 'gemini' && mins > 60 ? 'Geminiの音声は大きい（1時間で約170MB）ので、長すぎると保存できないことがあります。' : '')
     + (mins > 180 ? '長いので、まとめるのに数分かかることがあります。' : '');
   $('#expFill').style.width = '0';
   $('#expMsg').hidden = true;
@@ -1837,7 +1952,10 @@ async function runExport() {
     while (next < n && !ctrl.signal.aborted) {
       const i = next++;
       const blob = await synth(chunks[i].speech, ctrl.signal, R.profile);
-      parts[i] = new Uint8Array(await blob.arrayBuffer());
+      let buf = await blob.arrayBuffer();
+      // GeminiのWAVはMP3にしてからまとめる（保存してある分もついでに置き換わる）。変換の部品を読み込めないときはWAVのまま
+      if (audioType(buf) === 'audio/wav') buf = await squeeze(keyFor(chunks[i].speech, R.profile), buf).catch(() => buf);
+      parts[i] = new Uint8Array(buf);
       $('#expFill').style.width = `${(++done / n * 100).toFixed(1)}%`;
     }
   };
@@ -1854,6 +1972,12 @@ async function runExport() {
     return;
   }
   const wav = audioType(parts[0].buffer) === 'audio/wav';
+  if (parts.some((p) => (audioType(p.buffer) === 'audio/wav') !== wav)) {
+    $('#expMsg').textContent = '音声をまとめる準備ができませんでした。電波のあるところで、もう一度「書き出す」を押してください。';
+    $('#expMsg').hidden = false;
+    $('#expStart').disabled = false;
+    return;
+  }
   let file;
   if (wav) {
     const ps = parts.map(wavParts);
@@ -1882,7 +2006,10 @@ expDlg.addEventListener('close', () => {
 
 /* ---------- 起動 ---------- */
 renderEngine();
+renderLimit();
 scheduleEstimate();
+// 前に保存したWAVは、起動して少し落ち着いてから1つずつMP3に変える
+setTimeout(async () => { if (!store.get('wavScanned', false)) await findOldWav(); squeezeAll(); }, 3000);
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
