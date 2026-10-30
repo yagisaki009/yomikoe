@@ -464,11 +464,13 @@ const SPEAKABLE = /[\p{L}\p{N}]/u;
 // 1回に送る量。最初の数回はすぐ鳴らせるよう短くし、その後は段落をまとめて自然な抑揚を保つ。
 // 版2はGeminiの1日の回数を節約するため大きくまとめる（1回の音声の上限は約10分なので、1,800字までに抑える）。
 // 区切り方が変わると保存済みの音声を使い回せないので、読み上げごとにどの版で区切ったかを覚えておく
+// 版3は、題名だけ・最後の数十字だけで1回使わないよう、小さい回は次の文で埋め、短い残りは前の回にまとめる
 const CHUNKING = {
   1: { first: [80, 250], xai: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } },
   2: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 1500, max: 1800 } },
+  3: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
 };
-const CHUNK_VERSION = { xai: 1, gemini: 2 };
+const CHUNK_VERSION = { xai: 1, gemini: 3 };
 const AHEAD = 3, PARALLEL = 2;
 const CHARS_PER_MIN = 330;
 const RATES = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
@@ -763,6 +765,35 @@ function base64ToBuffer(b64) {
   return u8.buffer;
 }
 
+function wavSeconds(buf) {
+  const { fmt, data } = wavParts(new Uint8Array(buf));
+  if (!fmt || fmt.length < 16) return 0;
+  return data.length / (new DataView(fmt.buffer, fmt.byteOffset, fmt.byteLength).getUint32(8, true) || 1);
+}
+// 文の切れ目のうち、まん中にいちばん近いところで2つに分ける
+function splitHalf(text) {
+  const mid = text.length / 2;
+  let best = -1;
+  for (let i = 0; i < text.length - 1; i++) if ('\n。！？!?」'.includes(text[i]) && (best < 0 || Math.abs(i - mid) < Math.abs(best - mid))) best = i;
+  const at = best < 0 ? Math.round(mid) : best + 1;
+  return [text.slice(0, at).trim(), text.slice(at).trim()];
+}
+async function synthHalves(text, signal, p) {
+  const halves = splitHalf(text);
+  if (!halves[0] || !halves[1]) return null;
+  const parts = [];
+  for (const h of halves) parts.push(wavParts(new Uint8Array(await (await synth(h, signal, p)).arrayBuffer())));
+  // 半分ずつの音声は、つないだ1つを保存するので消しておく
+  idb('readwrite', (s) => { for (const h of halves) s.delete(keyFor(h, p)); return null; });
+  if (parts.some((x) => !x.fmt || x.fmt.join() !== parts[0].fmt.join())) return null;
+  const head = wavHeader(parts[0].fmt, parts[0].data.length + parts[1].data.length);
+  const out = new Uint8Array(head.length + parts[0].data.length + parts[1].data.length);
+  out.set(head);
+  out.set(parts[0].data, head.length);
+  out.set(parts[1].data, head.length + parts[0].data.length);
+  return out.buffer;
+}
+
 async function synth(text, signal, p = curProfile()) {
   const { engine, voice } = p, key = keyFor(text, p);
   const hit = await cacheGet(key);
@@ -788,6 +819,8 @@ async function synth(text, signal, p = curProfile()) {
           if (!b64) throw new TtsError('bad', 'Geminiから音声が返ってきませんでした。');
           buf = base64ToBuffer(b64);
           countGeminiRequest();
+          // 1回で作れる音声は約10分（655秒）まで。それに近い長さなら途中で切れたとみなし、半分ずつ作ってつなぐ
+          if (wavSeconds(buf) >= 630) buf = (await synthHalves(text, signal, p)) || buf;
         } else {
           buf = await res.arrayBuffer();
         }
@@ -860,11 +893,13 @@ function chunkText(raw, { engine = settings.engine, dict: dictText = settings.di
   const dict = dictEntries(dictText);
   const chunks = [];
   let cur = null, pending = [];
-  const { first } = CHUNKING[chunk], { target, max } = CHUNKING[chunk][engine];
+  const { first, pack } = CHUNKING[chunk], { target, max } = CHUNKING[chunk][engine];
   const limit = () => first[chunks.length] ?? target;
+  // 版3：まだ半分にも満たない回は区切らず、次の段落の文を足していく
+  const small = () => pack && cur && cur.speech.length < limit() * 0.5;
   const flush = () => { if (cur) { chunks.push(cur); cur = null; } };
   const add = (sp, dp, pid) => {
-    if (!cur) { cur = { speech: '', display: pending, pid: -1 }; pending = []; }
+    if (!cur) { cur = { speech: '', display: pending, pid: -1, firstPid: pid }; pending = []; }
     if (marks?.has(pid) && !found.has(pid)) found.set(pid, { chunk: chunks.length, at: cur.speech.length + (cur.speech ? 1 : 0), para: cur.display.length });
     if (cur.pid === pid) { cur.display[cur.display.length - 1] += dp; cur.speech += sp; }
     else { cur.display.push(dp); cur.speech += (cur.speech ? '\n' : '') + sp; cur.pid = pid; }
@@ -889,15 +924,27 @@ function chunkText(raw, { engine = settings.engine, dict: dictText = settings.di
       flush();
       return;
     }
-    if (cur && cur.speech.length + sp.length > limit()) flush();
-    if (sp.length <= limit()) { add(sp, dp, pid); return; }
+    if (cur && cur.speech.length + sp.length > limit() && !small()) flush();
+    if ((cur ? cur.speech.length : 0) + sp.length <= limit()) { add(sp, dp, pid); return; }
     for (const u of units) {
-      if (cur && cur.speech.length + u.sp.length > limit()) flush();
+      if (cur && cur.speech.length + u.sp.length > limit() && !small()) flush();
       add(u.sp, u.dp, pid);
     }
   });
   flush();
   if (pending.length && chunks.length) chunks[chunks.length - 1].display.push(...pending);
+  // 版3：短い残りは前の回にまとめる（同じ段落の続きなら改行を入れずにつなぐ）
+  // （前の回が大きくなりすぎると、作るのが再生に間に合わなくなるので、前の回の3割までにする）
+  const last = chunks[chunks.length - 1], prev = chunks[chunks.length - 2];
+  if (pack && prev && last.speech.length <= (first[chunks.length - 2] ?? target) * 0.3 && prev.speech.length + 1 + last.speech.length <= max) {
+    const cont = last.firstPid === prev.pid;
+    const at = prev.speech.length + (cont ? 0 : 1), para = prev.display.length - (cont ? 1 : 0);
+    for (const m of found.values()) if (m.chunk === chunks.length - 1) { m.chunk--; m.at += at; m.para += para; }
+    prev.speech += (cont ? '' : '\n') + last.speech;
+    if (cont) prev.display[prev.display.length - 1] += last.display.shift() ?? '';
+    prev.display.push(...last.display);
+    chunks.pop();
+  }
   const result = chunks.map((c, i) => ({ i, speech: c.speech, display: c.display, chars: c.speech.length }));
   result.marks = found;
   return result;
@@ -1011,9 +1058,13 @@ let estTimer;
 function scheduleEstimate() { clearTimeout(estTimer); estTimer = setTimeout(renderEstimate, 350); }
 async function renderEstimate() {
   const text = $('#text').value;
-  const filter = readFilterFor(text);
+  // 前に同じ文章を読んだ履歴があれば、その時の区切り方で数える（保存済みの音声を使うので）
+  const doc = text.trim() ? await findDoc(text) : null;
+  if (text !== $('#text').value) return;
+  const profile = doc ? doc.profile : curProfile();
+  const filter = doc ? doc.filter || null : readFilterFor(text);
   const readable = readableOf(text, filter);
-  const chunks = chunkText(readable);
+  const chunks = doc ? chunkText(readable, { engine: profile.chunkBy || profile.engine, dict: doc.dict, chunk: profile.chunk || 1 }) : chunkText(readable);
   const total = chunks.reduce((a, c) => a + c.chars, 0);
   const pos = store.get('pos', null);
   const resumable = pos && pos.h === hash(text) && (pos.i > 0 || pos.t > 5);
@@ -1023,12 +1074,12 @@ async function renderEstimate() {
   const used = settings.engine === 'gemini' ? geminiDayLine() : `今月 ${fmtYen(costYen(u))} / ${fmtNum(settings.budget)}円`;
   if (!total) { $('#estimate').textContent = `文章を入れると、読み上げ時間と料金の目安が出ます。${used}`; return; }
   const keys = await cacheKeys();
-  const fresh = chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech)) ? 0 : c.chars), 0);
+  const fresh = chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech, profile)) ? 0 : c.chars), 0);
   const yen = extraYen(fresh);
   const mins = Math.max(1, Math.round(total / CHARS_PER_MIN / settings.rate));
   const note = settings.engine === 'gemini' && fresh ? '（無料枠）' : fresh < total ? '（作成済みの部分は無料）' : '';
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
-  const needed = chunks.filter((c) => !keys.has(keyFor(c.speech))).length;
+  const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
     ? (needed ? `Geminiに送る回数 約<b>${needed}</b>回（無料）` : '作成済みなので回数を使いません')
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
@@ -1504,7 +1555,7 @@ if ('mediaSession' in navigator) {
 // 同じ文章を同じ声で読んだ履歴があれば、その時の区切り方で読む（保存済みの音声を使い回すため）
 async function findDoc(text) {
   const { engine, voice, style } = curProfile();
-  for (const chunk of [CHUNK_VERSION[engine], 1]) {
+  for (const chunk of new Set([CHUNK_VERSION[engine], 2, 1])) {
     const profile = chunk === 1 ? { engine, voice, style } : { engine, voice, style, chunk };
     for (const p of chunk === 1 ? [profile, { ...profile, chunk: 1 }] : [profile]) {
       const doc = await docGet(docIdOf(text, p, settings.dict, readFilterFor(text)));
