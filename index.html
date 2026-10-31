@@ -21,7 +21,7 @@
 :root {
   --bg: #EDF0EE; --surface: #FBFCFB; --ink: #1B2321; --muted: #5E6B67; --line: #D3DAD7;
   --accent: #2C5A86; --accent-ink: #FFFFFF; --now: #DCE7F0;
-  --warn: #7A4A00; --warn-bg: #FBEFD9; --err: #A33A2B;
+  --warn: #7A4A00; --warn-bg: #FBEFD9; --err: #A33A2B; --ok: #2F6B4A; --ok-bg: #E2EFE6;
   --f-ui: "Zen Kaku Gothic New", "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
   --f-read: "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
   --r: 12px;
@@ -31,14 +31,14 @@
   :root:not([data-theme="light"]) {
     --bg: #111614; --surface: #18201D; --ink: #E3EAE6; --muted: #97A6A0; --line: #2A3531;
     --accent: #8BB3DB; --accent-ink: #0E1A26; --now: #1F2E3B;
-    --warn: #F0C27A; --warn-bg: #2D2414; --err: #EF9A8C;
+    --warn: #F0C27A; --warn-bg: #2D2414; --err: #EF9A8C; --ok: #8FCBA6; --ok-bg: #18291F;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #111614; --surface: #18201D; --ink: #E3EAE6; --muted: #97A6A0; --line: #2A3531;
   --accent: #8BB3DB; --accent-ink: #0E1A26; --now: #1F2E3B;
-  --warn: #F0C27A; --warn-bg: #2D2414; --err: #EF9A8C;
+  --warn: #F0C27A; --warn-bg: #2D2414; --err: #EF9A8C; --ok: #8FCBA6; --ok-bg: #18291F;
   color-scheme: dark;
 }
 
@@ -108,6 +108,15 @@ body.has-player main { padding-bottom: 190px; }
 .chunk.now { background: var(--now); color: var(--ink); }
 .chunk[data-state="error"] { outline: 1px dashed var(--err); outline-offset: -1px; }
 .chunk.now[data-state="loading"] { animation: breathe 1.6s ease-in-out infinite; }
+/* 端末に保存した段落には、右上に小さな印 */
+.chunk { position: relative; }
+.chunk[data-saved]::after { content: "✓"; position: absolute; top: 7px; right: 5px; font: 700 11px/1 var(--f-ui); color: var(--ok); }
+.offline { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 8px 8px 8px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.offline > span { flex: 1; min-width: 0; }
+.offline b { color: var(--ink); }
+.offline.full { padding-block: 10px; border-color: transparent; background: var(--ok-bg); color: var(--ok); }
+.offline.full b { color: var(--ok); }
+.hist-meta b.ok { color: var(--ok); }
 @keyframes breathe { 50% { background-color: transparent; } }
 
 /* 履歴 */
@@ -292,6 +301,10 @@ input, select, textarea {
         <button type="button" id="exportBtn" class="btn ghost small">書き出し</button>
       </div>
     </div>
+    <div id="offlineBar" class="offline" hidden>
+      <span id="offlineText"></span>
+      <button type="button" id="offlineBtn" class="btn ghost small"></button>
+    </div>
     <ol id="chunkList" class="chunks"></ol>
   </section>
 
@@ -301,7 +314,7 @@ input, select, textarea {
       <h1>履歴</h1>
       <span aria-hidden="true"></span>
     </div>
-    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても料金はかかりません（保存が<span class="cache-limit">3GB</span>を超えると、古い音声から消えます。上限は設定で変えられます）。</p>
+    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても回数や料金はかかりません。「端末に保存」を押すと、残りの段落もまとめて作り、電波がなくても最後まで聞けるようになります。すべて保存した履歴（✓ 端末に保存済み）は消しません。途中までの履歴は、保存が<span class="cache-limit">3GB</span>を超えると古い音声から消えます（上限は設定で変えられます）。</p>
     <p id="histEmpty" class="hist-empty" hidden>まだ履歴はありません。<br>文章を読み上げると、ここに残ります。</p>
     <ul id="histList" class="hist"></ul>
   </section>
@@ -595,6 +608,7 @@ const docAll = async () => ((await idbStore('docs', 'readonly', (s) => s.getAll(
 const textGet = (id) => idbStore('texts', 'readonly', (s) => s.get(id));
 const cacheGet = (k) => idb('readonly', (s) => s.get(k));
 const cachePut = (k, buf) => idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then(() => {
+  noteSaved(k);
   if (audioType(buf) === 'audio/wav') { wavKeys.add(k); saveWavKeys(); squeezeAll(); }
   return trimCache();
 });
@@ -616,14 +630,18 @@ async function trimCache(force = false) {
   });
   let total = items.reduce((a, it) => a + it[1], 0);
   if (total <= cacheLimit()) return;
+  // すべて保存した履歴（オフラインで聞けるもの）、いま開いている文章、保存している途中の履歴の音声は消さない
+  const have = new Set(items.map((it) => it[0])), keep = new Set(R.chunkKeys);
+  for (const d of await docAll()) if (d.keys.every((k) => have.has(k)) || saver.queue.includes(d.id) || saver.job?.id === d.id) d.keys.forEach((k) => keep.add(k));
   items.sort((a, b) => a[2] - b[2]);
   const drop = [];
-  for (const [k, size] of items) { if (total <= cacheLimit() * 0.8) break; drop.push(k); total -= size; }
+  for (const [k, size] of items) { if (total <= cacheLimit() * 0.8) break; if (keep.has(k)) continue; drop.push(k); total -= size; }
   await idb('readwrite', (s) => { for (const k of drop) s.delete(k); return null; });
+  if (drop.length) refreshSaved();
 }
 const audioType = (buf) => (new Uint8Array(buf, 0, 4).join() === '82,73,70,70' ? 'audio/wav' : 'audio/mpeg');
 const toBlob = (buf) => new Blob([buf], { type: audioType(buf) });
-const cacheClear = () => { wavKeys.clear(); saveWavKeys(); return Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear()))); };
+const cacheClear = () => { wavKeys.clear(); saveWavKeys(); return Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear()))).then(refreshSaved); };
 const cacheKeys = async () => new Set((await idb('readonly', (s) => s.getAllKeys())) || []);
 async function cacheSize() {
   const db = await openDb();
@@ -1139,7 +1157,7 @@ async function renderEstimate() {
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
   const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
-    ? (needed ? `Geminiに送る回数 約<b>${needed}</b>回（無料）` : '作成済みなので回数を使いません')
+    ? (needed ? `Geminiに送る回数 約<b>${needed}</b>回（無料）` : '<b>✓ 端末に保存済み</b>（回数を使いません）')
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
   $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
@@ -1186,7 +1204,7 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------- 再生 ---------- */
 const audio = $('#audio');
-const R = { chunks: [], prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, episodes: [], curEp: -1 };
+const R = { chunks: [], chunkKeys: [], saved: new Set(), prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, episodes: [], curEp: -1 };
 let silentUrl = null;
 
 function silentWav(ms = 200, rate = 8000) {
@@ -1355,12 +1373,13 @@ async function rememberDoc() {
   if (ctrl !== R.ctrl) return;
   R.doc = {
     id, title: old?.title || R.title, profile: R.profile, dict: R.dict, filter: R.filter, chars: R.total, n: R.chunks.length,
-    keys: R.chunks.map((c) => keyFor(c.speech, R.profile)),
+    keys: R.chunkKeys,
     createdAt: old?.createdAt || now, updatedAt: now, pos: { i: R.idx, t: 0, done: false },
   };
   R.title = R.doc.title;
   $('#docTitle').textContent = R.title;
   await docPut(R.doc);
+  renderOfflineBar();
   if (!old) await idbStore('texts', 'readwrite', (s) => s.put(R.text, id));
   navigator.storage?.persist?.().catch(() => {});
 }
@@ -1387,6 +1406,8 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   const stories = parseScript(text, R.filter || {}).stories.map((st) => ({ ...st, line: R.filter ? st.line : st.rawLine }));
   R.chunks = chunkText(readableOf(text, R.filter), { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1, marks: new Set(stories.map((st) => st.line)) });
   if (!R.chunks.length) { showNotice('読み上げる文章がありません。'); return; }
+  R.chunkKeys = R.chunks.map((c) => keyFor(c.speech, R.profile));
+  R.saved = new Set();
   R.prefix = [];
   R.total = 0;
   for (const c of R.chunks) { R.prefix.push(R.total); R.total += c.chars; }
@@ -1405,6 +1426,7 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   R.finished = false;
   $('#docTitle').textContent = R.title;
   renderChunks();
+  refreshSaved();
   $('#player').hidden = false;
   document.body.classList.add('has-player');
   showView('read');
@@ -1754,7 +1776,7 @@ function renderLimit() {
 async function renderCache() {
   renderLimit();
   const mb = (await cacheSize()) / 1048576;
-  $('#cacheText').textContent = `保存している音声 ${mb < 10 ? mb.toFixed(1) : fmtNum(mb)} MB`;
+  $('#cacheText').textContent = `保存している音声 ${mb < 10 ? mb.toFixed(1) : fmtNum(mb)} MB${mb * 1048576 > cacheLimit() ? '（上限を超えています。端末に保存した履歴は消さないので、いらない履歴を削除するか、上限を上げてください）' : ''}`;
 }
 $('#cacheGB').addEventListener('change', (e) => {
   settings.cacheGB = Number(e.target.value);
@@ -1879,14 +1901,19 @@ async function renderHistory() {
     open.type = 'button';
     const state = make('span', 'hist-meta');
     if (playing) state.append(make('b', null, R.wantPlay ? '再生中' : '開いている'), ' ・ ');
-    state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ 音声 ${saved}/${d.n}段落 保存済み`);
+    const job = saver.job?.id === d.id ? saver.job : null, queued = saver.queue.includes(d.id);
+    state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ `);
+    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'));
+    else state.append(job ? `端末に保存しています… ${job.done}/${d.n}段落` : queued ? `保存の順番待ち（${saved}/${d.n}段落）` : `端末に保存 ${saved}/${d.n}段落`);
     const bar = make('span', 'meter');
     const fill = make('span');
     fill.style.width = `${pos.done ? 100 : Math.round((pos.i || 0) / d.n * 100)}%`;
     bar.append(fill);
     open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}${d.filter ? ' ・ 題名と本文のみ' : ''}`), state, bar);
     const actions = make('div', 'hist-actions');
-    for (const [act, label] of [['rename', '名前を変える'], ['delete', '削除']]) {
+    const acts = [['rename', '名前を変える'], ['delete', '削除']];
+    if (saved < d.n) acts.unshift(job || queued ? ['unsave', '保存をやめる'] : ['save', '端末に保存']);
+    for (const [act, label] of acts) {
       const b = make('button', 'btn ghost small', label);
       b.type = 'button';
       b.dataset.act = act;
@@ -1904,6 +1931,8 @@ $('#histList').addEventListener('click', async (e) => {
   if (!li) return;
   const id = li.dataset.id, title = li.querySelector('.hist-title').textContent;
   const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'save') { saveDoc(id); return; }
+  if (act === 'unsave') { stopSaving(id); return; }
   if (act === 'rename') {
     const name = prompt('履歴の名前', title)?.trim();
     if (!name) return;
@@ -1923,13 +1952,16 @@ $('#histList').addEventListener('click', async (e) => {
     if (R.doc?.id === id) {
       stopAll();
       R.chunks = [];
+      R.chunkKeys = [];
       R.doc = null;
       R.sig = '';
+      renderOfflineBar();
       $('#chunkList').textContent = '';
       $('#player').hidden = true;
       document.body.classList.remove('has-player');
     }
     // ほかの履歴でも使っている音声は残す
+    stopSaving(id);
     const keep = new Set(docs.filter((d) => d.id !== id).flatMap((d) => d.keys));
     await idb('readwrite', (s) => { for (const k of doc.keys) if (!keep.has(k)) s.delete(k); return null; });
     await idbStore('docs', 'readwrite', (s) => s.delete(id));
@@ -1951,6 +1983,108 @@ $('#histList').addEventListener('click', async (e) => {
   hideNotice();
   const pos = doc.pos || {};
   startReading(text, pos.done ? 0 : pos.i || 0, pos.done ? 0 : pos.t || 0, doc);
+});
+
+/* ---------- 端末に保存（電波がなくても聞けるように） ---------- */
+// 保存を頼まれた履歴は、1件ずつ順番に、まだ作っていない段落を作る
+const saver = { queue: [], job: null };
+function docChunks(doc, text) {
+  const p = doc.profile;
+  return chunkText(readableOf(text, doc.filter || null), { engine: p.chunkBy || p.engine, dict: doc.dict, chunk: p.chunk || 1 });
+}
+function saveDoc(id) {
+  if (saver.job?.id === id || saver.queue.includes(id)) return;
+  saver.queue.push(id);
+  navigator.storage?.persist?.().catch(() => {});
+  renderSaving();
+  if (!saver.job) runSaver();
+}
+function stopSaving(id) {
+  saver.queue = saver.queue.filter((q) => q !== id);
+  if (saver.job?.id === id) saver.job.ctrl.abort();
+  renderSaving();
+}
+async function runSaver() {
+  while (saver.queue.length) {
+    const id = saver.queue[0];
+    const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
+    const have = await cacheKeys();
+    if (saver.queue[0] !== id) continue;
+    saver.queue.shift();
+    if (!doc || typeof text !== 'string') continue;
+    const todo = docChunks(doc, text).filter((c) => !have.has(keyFor(c.speech, doc.profile)));
+    const job = saver.job = { id, title: doc.title, n: doc.n, done: doc.n - todo.length, ctrl: new AbortController() };
+    renderSaving();
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length && !job.ctrl.signal.aborted) {
+        await synth(todo[next++].speech, job.ctrl.signal, doc.profile);
+        job.done++;
+        renderSaving();
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: PARALLEL }, worker));
+    } catch (e) {
+      job.ctrl.abort();
+      if (e.name !== 'AbortError') {
+        saver.queue = [];
+        saver.job = null;
+        renderSaving();
+        showNotice(`「${job.title}」の保存が止まりました。${e.message}ここまでの段落は保存済みです。もう一度「端末に保存」を押すと、残りだけを作ります。`,
+          e.kind === 'nokey' || e.kind === 'auth' ? '設定を開く' : '', () => { hideNotice(); openSettings(); });
+        return;
+      }
+    }
+    saver.job = null;
+    if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。電波がなくても聞けます。`);
+  }
+  renderSaving();
+}
+let histTimer = 0;
+function renderSaving() {
+  renderOfflineBar();
+  // 履歴の一覧は、開いているときだけ、まとめて描き直す
+  if (!$('#historyView').hidden && !histTimer) histTimer = setTimeout(() => { histTimer = 0; renderHistory(); }, 400);
+}
+// 読み上げ画面：段落ごとの印と、全体の保存の様子
+function noteSaved(k) {
+  if (!R.chunkKeys.includes(k) || R.saved.has(k)) return;
+  R.saved.add(k);
+  const items = $('#chunkList').children;
+  R.chunkKeys.forEach((key, i) => { if (key === k) items[i]?.setAttribute('data-saved', ''); });
+  renderOfflineBar();
+}
+async function refreshSaved() {
+  const ck = R.chunkKeys, keys = await cacheKeys();
+  if (ck !== R.chunkKeys) return;
+  R.saved = new Set(ck.filter((k) => keys.has(k)));
+  const items = $('#chunkList').children;
+  ck.forEach((k, i) => items[i]?.toggleAttribute('data-saved', R.saved.has(k)));
+  renderOfflineBar();
+}
+function renderOfflineBar() {
+  const bar = $('#offlineBar'), btn = $('#offlineBtn'), n = R.chunkKeys.length;
+  bar.hidden = !n;
+  if (!n) return;
+  const s = R.chunkKeys.filter((k) => R.saved.has(k)).length, id = R.doc?.id;
+  const busy = id && (saver.job?.id === id || saver.queue.includes(id));
+  bar.classList.toggle('full', s >= n);
+  btn.hidden = s >= n;
+  btn.disabled = !id;
+  btn.dataset.act = busy ? 'stop' : 'save';
+  if (s >= n) $('#offlineText').innerHTML = '<b>✓ 端末に保存済み</b>（電波なしで聞けます）';
+  else if (busy) { $('#offlineText').innerHTML = `端末に保存しています… <b>${s}</b>/${n}段落`; btn.textContent = 'やめる'; }
+  else {
+    $('#offlineText').innerHTML = `端末に保存 <b>${s}</b>/${n}段落`;
+    btn.textContent = R.profile.engine === 'gemini' ? `残りを保存（${n - s}回）` : '残りを保存';
+  }
+}
+$('#offlineBtn').addEventListener('click', (e) => {
+  const id = R.doc?.id;
+  if (!id) return;
+  if (e.currentTarget.dataset.act === 'stop') stopSaving(id);
+  else saveDoc(id);
 });
 
 /* ---------- 目次 ---------- */
