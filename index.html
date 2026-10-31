@@ -359,6 +359,12 @@ input, select, textarea {
     </section>
 
     <section class="group" data-engine="gemini">
+      <h3>無料枠を使い切ったとき</h3>
+      <label class="check"><input id="geminiFallback" type="checkbox">3.8 Flash Liteの声で続ける</label>
+      <p class="hint">Geminiの無料枠は、声のモデルごとに別々に決まっています。いつもの3.8 Flashを使い切ったら、同じ声・同じ「読み方の雰囲気」のまま、軽い3.8 Flash Liteに切り替えて続けます。声の自然さは少し下がります。毎日16〜17時ごろに、3.8 Flashに戻ります。</p>
+    </section>
+
+    <section class="group" data-engine="gemini">
       <h3>読み方の雰囲気</h3>
       <input id="geminiStyle" type="text" autocomplete="off" placeholder="例：落ち着いた声で、物語を朗読するように">
       <p class="hint">声の調子を言葉で指示できます。怪談なら「静かに、低い声で語るように」など。</p>
@@ -456,7 +462,9 @@ const $ = (s) => document.querySelector(s);
 
 // Geminiの声（f=女性, m=男性 と声の特徴）
 const GEMINI_VOICES = { Achernar: ['f', 'やわらか'], Achird: ['m', '親しみやすい'], Algenib: ['m', 'しゃがれ声'], Algieba: ['m', 'なめらか'], Alnilam: ['m', 'しっかり'], Aoede: ['f', '軽やか'], Autonoe: ['f', '明るい'], Callirrhoe: ['f', 'おおらか'], Charon: ['m', '知的'], Despina: ['f', 'なめらか'], Enceladus: ['m', '息まじり'], Erinome: ['f', 'はっきり'], Fenrir: ['m', '勢いがある'], Gacrux: ['f', '大人びた'], Iapetus: ['m', 'はっきり'], Kore: ['f', 'しっかり'], Laomedeia: ['f', '弾む'], Leda: ['f', '若々しい'], Orus: ['m', 'しっかり'], Pulcherrima: ['f', '前向き'], Puck: ['m', '弾む'], Rasalgethi: ['m', '知的'], Sadachbia: ['m', '生き生き'], Sadaltager: ['m', '物知り'], Schedar: ['m', '落ち着き'], Sulafat: ['f', 'あたたか'], Umbriel: ['m', 'おおらか'], Vindemiatrix: ['f', 'やさしい'], Zephyr: ['f', '明るい'], Zubenelgenubi: ['m', 'くだけた'] };
-const GEMINI_MODEL = 'gemini-3.8-flash-tts';
+// 無料枠は声のモデルごとに1日の回数が決まっている。いつものモデルを使い切ったら、同じ声・同じ指示が使える軽いモデルで続ける
+const GEMINI_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
+const MODEL_NAME = { 'gemini-3.8-flash-tts': '3.8 Flash', 'gemini-3.8-flash-lite-tts': '3.8 Flash Lite' };
 const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
@@ -487,7 +495,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -509,12 +517,28 @@ function addUsage(engine, n) { const u = usage(); u[engine] = Math.max(0, u[engi
 const costYen = (u) => u.xai * settings.price / 1e6 * settings.fx;
 const geminiDay = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
 function geminiToday() { const d = store.get('geminiDay', null); return d && d.day === geminiDay() ? d : { day: geminiDay(), n: 0 }; }
-function countGeminiRequest() { const d = geminiToday(); d.n++; store.set('geminiDay', d); }
+function countGeminiRequest(model) {
+  const d = geminiToday();
+  d.by ||= { [GEMINI_MODELS[0]]: d.n }; // 前の版で数えた分は、すべていつものモデルの分
+  d.n++;
+  d.by[model] = (d.by[model] || 0) + 1;
+  store.set('geminiDay', d);
+}
+// 今日使い切ったモデル。キーを変えると別のプロジェクトの枠になるので、キーごとに覚える
+const keyTag = () => hash(settings.geminiKey).slice(0, 8);
+function modelsOut() { const o = store.get('geminiOut', null); return o && o.day === geminiDay() && o.key === keyTag() ? o.models : []; }
+function markOut(model) { const m = modelsOut(); if (!m.includes(model)) store.set('geminiOut', { day: geminiDay(), key: keyTag(), models: [...m, model] }); }
+const geminiModel = () => (settings.geminiFallback ? GEMINI_MODELS : GEMINI_MODELS.slice(0, 1)).find((m) => !modelsOut().includes(m));
 // 上限に達したときの回数を覚えておき、次から目安として見せる
-function noteQuotaHit() { const d = geminiToday(); store.set('quotaHit', { day: d.day, n: d.n }); }
+function noteQuotaHit(model) {
+  markOut(model);
+  const d = geminiToday();
+  if (model === GEMINI_MODELS[0]) store.set('quotaHit', { day: d.day, n: d.by?.[model] ?? d.n });
+}
 function geminiDayLine() {
-  const today = geminiToday(), hit = store.get('quotaHit', null);
-  if (hit && hit.day === today.day) return `今日の無料枠は使い切りました（この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
+  const today = geminiToday(), hit = store.get('quotaHit', null), model = geminiModel();
+  if (!model) return `今日の無料枠は使い切りました（この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
+  if (model !== GEMINI_MODELS[0]) return `${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}で読んでいます（今日この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   return `今日この端末で使った回数 ${today.n}回${hit ? `（前回は${hit.n}回で上限に達しました）` : ''} ・ 毎日16〜17時ごろに0に戻ります`;
 }
 function extraYen(n, engine = settings.engine) { const u = usage(), before = costYen(u); u[engine] += n; return costYen(u) - before; }
@@ -727,13 +751,13 @@ function requestXai(text, voice, signal) {
 }
 // Geminiは表現タグの書き方が違うので置き換え、対応のないもの（ささやき等の囲み）は外して送る
 const GEMINI_TAGS = { pause: '<short pause>', 'long-pause': '<long pause>', breath: '<breath>', inhale: '<breath>', exhale: '<exhales>', sigh: '<sigh>', laugh: '<laugh>', chuckle: '<chuckle>', giggle: '<giggle>', cry: '<cry>', tsk: '<tsk>' };
-function requestGemini(text, voice, style, signal) {
+function requestGemini(text, voice, style, model, signal) {
   const part = { type: 'text', text: text.replace(TAG_RE, (t) => GEMINI_TAGS[t.slice(1, -1)] || '') };
   if (style) part.annotations = [{ type: 'speech_metadata', style }];
   return fetch(`${GEMINI_API}/interactions`, {
     method: 'POST', signal,
     headers: { 'x-goog-api-key': settings.geminiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: GEMINI_MODEL, input: [{ type: 'user_input', content: [part] }], response_format: { type: 'audio' }, generation_config: { speech_config: [{ voice }] } }),
+    body: JSON.stringify({ model, input: [{ type: 'user_input', content: [part] }], response_format: { type: 'audio' }, generation_config: { speech_config: [{ voice }] } }),
   });
 }
 // 返事の中から最後の音声データを探す
@@ -794,6 +818,14 @@ async function synthHalves(text, signal, p) {
   return out.buffer;
 }
 
+const quotaError = () => new TtsError('quota', '今日のGeminiの無料枠を使い切りました。毎日、日本時間の16〜17時ごろに回復します。');
+let toldFallback = '';
+function tellFallback(model) {
+  if (toldFallback === geminiDay()) return;
+  toldFallback = geminiDay();
+  showNotice(`今日の${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}の声で続けます。声の自然さが少し変わります。`);
+}
+
 async function synth(text, signal, p = curProfile()) {
   const { engine, voice } = p, key = keyFor(text, p);
   const hit = await cacheGet(key);
@@ -804,9 +836,11 @@ async function synth(text, signal, p = curProfile()) {
   addUsage(engine, n); // 並行して作っても上限を超えないよう、先に計上しておく
   try {
     for (let attempt = 0; ; attempt++) {
+      const model = engine === 'gemini' ? geminiModel() : '';
+      if (engine === 'gemini' && !model) throw quotaError();
       let res;
       try {
-        res = await (engine === 'gemini' ? requestGemini(text, voice, p.style, signal) : requestXai(text, voice, signal));
+        res = await (engine === 'gemini' ? requestGemini(text, voice, p.style, model, signal) : requestXai(text, voice, signal));
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
@@ -818,7 +852,7 @@ async function synth(text, signal, p = curProfile()) {
           const b64 = findAudio(await res.json());
           if (!b64) throw new TtsError('bad', 'Geminiから音声が返ってきませんでした。');
           buf = base64ToBuffer(b64);
-          countGeminiRequest();
+          countGeminiRequest(model);
           // 1回で作れる音声は約10分（655秒）まで。それに近い長さなら途中で切れたとみなし、半分ずつ作ってつなぐ
           if (wavSeconds(buf) >= 630) buf = (await synthHalves(text, signal, p)) || buf;
         } else {
@@ -830,8 +864,19 @@ async function synth(text, signal, p = curProfile()) {
       const raw = await res.text().catch(() => '');
       const detail = errorDetail(raw);
       if (res.status === 429 && engine === 'gemini' && /per[ _]?day/i.test(raw)) {
-        noteQuotaHit();
-        throw new TtsError('quota', '今日のGeminiの無料枠を使い切りました。毎日、日本時間の16〜17時ごろに回復します。');
+        noteQuotaHit(model);
+        const nextModel = geminiModel();
+        if (!nextModel) throw quotaError();
+        tellFallback(nextModel);
+        attempt = -1; // モデルが変わるので、やり直しの回数も数え直す
+        continue;
+      }
+      // 予備のモデルがこのキーで使えないときは、今日はもう送らない
+      if (engine === 'gemini' && model !== GEMINI_MODELS[0] && (res.status === 404 || (res.status === 400 && /model|not (found|supported)|unsupported/i.test(detail)))) {
+        markOut(model);
+        if (!geminiModel()) throw quotaError();
+        attempt = -1;
+        continue;
       }
       // 無料枠は1分あたりの回数にも上限があるので、言われた時間だけ待ってやり直す
       if ((res.status === 429 || res.status >= 500) && attempt < (engine === 'gemini' ? 6 : 3)) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
@@ -1512,6 +1557,8 @@ function handleError(e) {
   renderPlay();
   if (e.kind === 'nokey' || e.kind === 'auth') {
     showNotice(e.message, '設定を開く', () => { hideNotice(); openSettings(); });
+  } else if (e.kind === 'quota' && !settings.geminiFallback) {
+    showNotice(e.message, `${MODEL_NAME[GEMINI_MODELS[1]]}で続ける`, () => { settings.geminiFallback = true; saveSettings(); hideNotice(); resume(); });
   } else if (e.kind === 'budget') {
     showNotice(`${e.message}上限は設定で変えられます。`, '今回は続ける', () => { overBudgetOk = true; hideNotice(); resume(); });
   } else {
@@ -1599,6 +1646,7 @@ function openSettings(msg) {
   $('#price').value = settings.price;
   $('#dict').value = settings.dict;
   $('#scriptOnly').checked = settings.scriptOnly;
+  $('#geminiFallback').checked = settings.geminiFallback;
   $('#readAfterword').checked = settings.readAfterword;
   $('#readAfterword').disabled = !settings.scriptOnly;
   renderEngine();
@@ -1665,6 +1713,7 @@ for (const id of ['budget', 'fx', 'price']) {
 $('#dict').addEventListener('input', (e) => { settings.dict = e.target.value; saveSettings(); });
 $('#scriptOnly').addEventListener('change', (e) => { settings.scriptOnly = e.target.checked; $('#readAfterword').disabled = !e.target.checked; saveSettings(); });
 $('#readAfterword').addEventListener('change', (e) => { settings.readAfterword = e.target.checked; saveSettings(); });
+$('#geminiFallback').addEventListener('change', (e) => { settings.geminiFallback = e.target.checked; saveSettings(); renderUsage(); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
   if (!confirm('保存した音声と履歴をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
@@ -1677,7 +1726,8 @@ function renderUsage() {
   const t = $('#usageText');
   if (!t) return;
   const u = usage(), y = costYen(u);
-  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）<br>Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
+  const model = geminiModel(), now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : '';
+  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
   $('#usageMeter').classList.toggle('over', ratio >= 1);
