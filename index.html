@@ -449,6 +449,7 @@ input, select, textarea {
     <p id="expMsg" class="msg" hidden></p>
     <div class="actions">
       <button type="button" id="expStart" class="btn primary">書き出す</button>
+      <button type="button" id="expStop" class="btn ghost" hidden>書き出しをやめる</button>
       <a id="expSave" class="btn primary" hidden>ファイルを保存</a>
     </div>
   </div>
@@ -826,10 +827,20 @@ function tellFallback(model) {
   showNotice(`今日の${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}の声で続けます。声の自然さが少し変わります。`);
 }
 
+// 読み上げと書き出しが同じ段落を同時に頼んだときは、先に頼んだほうの出来上がりを使い、Geminiに二重に送らない
+const making = new Map();
 async function synth(text, signal, p = curProfile()) {
-  const { engine, voice } = p, key = keyFor(text, p);
-  const hit = await cacheGet(key);
-  if (hit && hit.buf) return toBlob(hit.buf);
+  const key = keyFor(text, p), other = making.get(key);
+  if (other) { try { return await other; } catch { /* 先のほうが失敗・中止したら、こちらで作る */ } }
+  const job = (async () => {
+    const hit = await cacheGet(key);
+    return hit && hit.buf ? toBlob(hit.buf) : makeSpeech(text, signal, p, key);
+  })();
+  making.set(key, job);
+  try { return await job; } finally { if (making.get(key) === job) making.delete(key); }
+}
+async function makeSpeech(text, signal, p, key) {
+  const { engine, voice } = p;
   if (!keyOf(engine)) throw new TtsError('nokey', `${ENGINE_NAME[engine]}のAPIキーが入っていません。`);
   const n = text.length;
   if (!overBudgetOk && costYen(usage()) + extraYen(n, engine) > settings.budget) throw new TtsError('budget', `今月の上限（${fmtNum(settings.budget)}円）に達しました。`);
@@ -2029,7 +2040,12 @@ function wavHeader(fmt, total) {
 
 const expDlg = $('#exportDlg');
 let exp = null;
+function renderExportBtn() {
+  $('#exportBtn').textContent = !exp ? '書き出し' : exp.url ? '書き出し完了' : `書き出し中 ${Math.floor(exp.done / exp.n * 100)}%`;
+}
 async function openExport() {
+  // 書き出し中・書き出し済みなら、その様子を見せる
+  if (exp) { hideNotice(); expDlg.showModal(); return; }
   if (!R.chunks.length) return;
   const keys = await cacheKeys();
   const fresh = R.chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech, R.profile)) ? 0 : c.chars), 0);
@@ -2042,43 +2058,58 @@ async function openExport() {
   $('#expMsg').hidden = true;
   $('#expStart').hidden = false;
   $('#expStart').disabled = false;
+  $('#expStop').hidden = true;
   $('#expSave').hidden = true;
   expDlg.showModal();
 }
+// 書き出せなかったときは、画面を開いていればそこに、閉じていればお知らせで伝える
+function exportFailed(msg) {
+  exp = null;
+  renderExportBtn();
+  $('#expStart').hidden = false;
+  $('#expStart').disabled = false;
+  $('#expStop').hidden = true;
+  if (expDlg.open) { $('#expMsg').textContent = msg; $('#expMsg').hidden = false; }
+  else showNotice(`書き出しが止まりました。${msg}`, '書き出しを開く', () => { hideNotice(); openExport(); });
+}
 async function runExport() {
   const ctrl = new AbortController();
-  const chunks = R.chunks, n = chunks.length, parts = new Array(n);
-  let next = 0, done = 0;
-  exp = { ctrl, url: null };
-  $('#expStart').disabled = true;
+  // 書き出しの途中で別の文章を開いても、押したときの文章を書き出す
+  const chunks = R.chunks, profile = R.profile, title = R.title, n = chunks.length, parts = new Array(n);
+  let next = 0;
+  const job = exp = { ctrl, url: null, done: 0, n };
+  $('#expStart').hidden = true;
+  $('#expStop').hidden = false;
+  $('#expMsg').hidden = true;
+  $('#expInfo').textContent = `「${title}」を書き出しています。この画面を閉じても書き出しは続くので、そのまま聞いたり操作したりできます。`;
+  renderExportBtn();
   const worker = async () => {
     while (next < n && !ctrl.signal.aborted) {
       const i = next++;
-      const blob = await synth(chunks[i].speech, ctrl.signal, R.profile);
+      const blob = await synth(chunks[i].speech, ctrl.signal, profile);
       let buf = await blob.arrayBuffer();
       // GeminiのWAVはMP3にしてからまとめる（保存してある分もついでに置き換わる）。変換の部品を読み込めないときはWAVのまま
-      if (audioType(buf) === 'audio/wav') buf = await squeeze(keyFor(chunks[i].speech, R.profile), buf).catch(() => buf);
+      if (audioType(buf) === 'audio/wav') buf = await squeeze(keyFor(chunks[i].speech, profile), buf).catch(() => buf);
       parts[i] = new Uint8Array(buf);
-      $('#expFill').style.width = `${(++done / n * 100).toFixed(1)}%`;
+      if (exp !== job) return;
+      $('#expFill').style.width = `${(++job.done / n * 100).toFixed(1)}%`;
+      renderExportBtn();
     }
   };
   try {
     await Promise.all(Array.from({ length: PARALLEL }, worker));
   } catch (e) {
     ctrl.abort();
-    if (e.name === 'AbortError') return;
-    $('#expMsg').textContent = e.kind === 'quota'
-      ? `${e.message}ここまでに作った${fmtNum(done)}段落は保存済みです。回復したら、もう一度「書き出す」を押すと残りだけを作ります。`
-      : e.message;
-    $('#expMsg').hidden = false;
-    $('#expStart').disabled = false;
+    if (e.name === 'AbortError' || exp !== job) return;
+    exportFailed(e.kind === 'quota'
+      ? `${e.message}ここまでに作った${fmtNum(job.done)}段落は保存済みです。回復したら、もう一度「書き出す」を押すと残りだけを作ります。`
+      : e.message);
     return;
   }
+  if (exp !== job) return;
   const wav = audioType(parts[0].buffer) === 'audio/wav';
   if (parts.some((p) => (audioType(p.buffer) === 'audio/wav') !== wav)) {
-    $('#expMsg').textContent = '音声をまとめる準備ができませんでした。電波のあるところで、もう一度「書き出す」を押してください。';
-    $('#expMsg').hidden = false;
-    $('#expStart').disabled = false;
+    exportFailed('音声をまとめる準備ができませんでした。電波のあるところで、もう一度「書き出す」を押してください。');
     return;
   }
   let file;
@@ -2092,20 +2123,32 @@ async function runExport() {
   exp.url = URL.createObjectURL(file);
   const a = $('#expSave');
   a.href = exp.url;
-  a.download = `${(R.title || 'よみこえ').replace(/[\\/:*?"<>|（）()「」\s]+/g, '_').slice(0, 30)}.${wav ? 'wav' : 'mp3'}`;
+  a.download = `${(title || 'よみこえ').replace(/[\\/:*?"<>|（）()「」\s]+/g, '_').slice(0, 30)}.${wav ? 'wav' : 'mp3'}`;
   a.hidden = false;
-  $('#expStart').hidden = true;
+  $('#expStop').hidden = true;
   const mb = file.size / 1048576;
-  $('#expInfo').textContent = `できました（${mb < 1 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${mb.toFixed(1)} MB`}）。「ファイルを保存」を押すと、iPhoneの「ファイル」アプリに保存されます。`;
+  $('#expInfo').textContent = `「${title}」ができました（${mb < 1 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${mb.toFixed(1)} MB`}）。「ファイルを保存」を押すと、iPhoneの「ファイル」アプリに保存されます。`;
+  renderExportBtn();
+  if (!expDlg.open) showNotice(`「${title}」の書き出しができました。`, '保存する', () => { hideNotice(); expDlg.showModal(); });
 }
 $('#exportBtn').addEventListener('click', openExport);
 $('#expStart').addEventListener('click', runExport);
-$('#expClose').addEventListener('click', () => expDlg.close());
-expDlg.addEventListener('close', () => {
+$('#expStop').addEventListener('click', () => {
   exp?.ctrl.abort();
-  if (exp?.url) setTimeout(() => URL.revokeObjectURL(exp.url), 60000);
   exp = null;
+  renderExportBtn();
+  expDlg.close();
 });
+// 書き出し中は、閉じても裏で続ける。できたファイルは閉じたら片付ける（作った音声は保存済みなので、もう一度書き出してもすぐできる）
+function exportClosed() {
+  if (!exp?.url) return;
+  const { url } = exp;
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  exp = null;
+  renderExportBtn();
+}
+$('#expClose').addEventListener('click', () => { expDlg.close(); exportClosed(); });
+expDlg.addEventListener('close', exportClosed);
 
 /* ---------- 起動 ---------- */
 renderEngine();
