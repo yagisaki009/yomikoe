@@ -881,6 +881,8 @@ async function synth(text, signal, p = curProfile()) {
       // 無料枠は1分あたりの回数にも上限があるので、言われた時間だけ待ってやり直す
       if ((res.status === 429 || res.status >= 500) && attempt < (engine === 'gemini' ? 6 : 3)) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
       if (engine === 'gemini') {
+        // 無料枠のキーなら429で止まる。402は、プロジェクトにお支払い情報が付いていて、前払いの残高が0のとき
+        if (res.status === 402) throw new TtsError('auth', 'このAPIキーのGoogleのプロジェクトは「有料（前払い）」の設定になっていて、前払いの残高が0のため、Googleが受け付けませんでした。無料で使うには、Google AI Studioで、お支払い情報を登録していない新しいプロジェクトでキーを作り、設定で入れ直してください。');
         if (/api key/i.test(detail)) throw new TtsError('auth', 'GeminiのAPIキーが正しくありません。設定で入れ直してください。');
         if (res.status === 403) throw new TtsError('auth', `このキーではGeminiの読み上げが使えません。Google AI Studioでキーを確認してください。（${detail.slice(0, 80)}）`);
       } else {
