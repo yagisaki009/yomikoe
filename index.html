@@ -407,7 +407,7 @@ input, select, textarea {
         </div>
         <label class="pick">モデル<select id="elModel"></select></label>
         <p id="elMsg" class="msg" hidden></p>
-        <p class="hint">ElevenLabsの無料プランは月1万字ほど（1,500字の話で6〜7話）です。超えると止まるだけで、料金はかかりません。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
+        <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
       </div>
     </section>
 
@@ -519,8 +519,7 @@ const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
 const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
 const MS_REGIONS = { japaneast: '東日本（Japan East）', japanwest: '西日本（Japan West）', eastasia: '香港（East Asia）', southeastasia: 'シンガポール（Southeast Asia）', koreacentral: '韓国（Korea Central）', eastus: '米国東部（East US）', westus2: '米国西部2（West US 2）', westeurope: '西ヨーロッパ（West Europe）' };
 const MS_FREE = 500000;
-// Microsoftも使い切ったときのElevenLabsの声。無料プランは月1万字ほどと少ない
-const EL_FREE = 10000;
+// Microsoftも使い切ったときのElevenLabsの声（無料プランは月1万字ほど、有料プランは契約した分）
 const EL_MODELS = { eleven_multilingual_v2: 'Multilingual v2（安定）', eleven_v3: 'v3（表現が豊か）' };
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
@@ -600,7 +599,7 @@ function noteQuotaHit(model) {
 function geminiDayLine() {
   const today = geminiToday(), hit = store.get('quotaHit', null), model = geminiModel();
   const sub = !model && nextSub();
-  if (sub) return `今日のGeminiの無料枠は使い切ったので、${SUBS[sub].name}の声で読みます（今月${fmtNum(usage()[sub])}字 / ${fmtNum(SUBS[sub].free)}字まで無料）。Geminiは毎日16〜17時ごろに戻ります`;
+  if (sub) return `今日のGeminiの無料枠は使い切ったので、${SUBS[sub].name}の声で読みます（${subUse(sub)}）。Geminiは毎日16〜17時ごろに戻ります`;
   if (!model) return `今日の無料枠は使い切りました（この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   if (model !== GEMINI_MODELS[0]) return `${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}で読んでいます（今日この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   return `今日この端末で使った回数 ${today.n}回${hit ? `（前回は${hit.n}回で上限に達しました）` : ''} ・ 毎日16〜17時ごろに0に戻ります`;
@@ -981,13 +980,15 @@ async function requestEl(text, signal, voice = settings.elVoice, model = setting
 
 // 代わりの声は、Microsoft（月50万字）→ ElevenLabs（月1万字）の順。使えなかったもの（今月の分を使い切った等）は、その日はもう試さない
 const SUBS = {
-  el: { name: 'ElevenLabs', free: EL_FREE, ready: () => settings.elFallback && !!settings.elKey && !!settings.elVoice, voice: elVoiceName, make: (t, sig) => requestEl(t, sig) },
+  el: { name: 'ElevenLabs', free: 0, ready: () => settings.elFallback && !!settings.elKey && !!settings.elVoice, voice: elVoiceName, make: (t, sig) => requestEl(t, sig) },
   ms: { name: 'Microsoft', free: MS_FREE, ready: () => settings.msFallback && !!settings.msKey, voice: msVoiceName, make: (t, sig) => requestMs(t, settings.msVoice, sig) },
 };
 const SUB_ORDER = ['ms', 'el'];
 function subsOut() { const o = store.get('subOut', null); return o && o.day === geminiDay() ? o.ids : []; }
 function markSubOut(id) { const ids = subsOut(); if (!ids.includes(id)) store.set('subOut', { day: geminiDay(), ids: [...ids, id] }); }
 const nextSub = () => SUB_ORDER.find((id) => SUBS[id].ready() && !subsOut().includes(id));
+// 今月この端末で作った字数（Microsoftは無料の上限も添える。ElevenLabsは契約で上限が違うので添えない）
+const subUse = (id) => `今月${fmtNum(usage()[id])}字${SUBS[id].free ? ` / ${fmtNum(SUBS[id].free)}字まで無料` : ''}`;
 const subNames = (ids) => [...new Set(ids)].map((id) => SUBS[id]?.name || id).join('・');
 const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の${subNames(SUB_ORDER.filter((id) => SUBS[id].ready()))}も、今日はもう使えません。Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
 // 代わりの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう、どの声で作ったかを覚えておく
@@ -2050,7 +2051,7 @@ function renderUsage() {
   const u = usage(), y = costYen(u);
   const model = geminiModel(), sub = !model && nextSub();
   const now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : sub ? `・今は${SUBS[sub].name}の声` : '';
-  const subs = SUB_ORDER.filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id]).map((id) => `${SUBS[id].name} 今月${fmtNum(u[id])}字 / ${fmtNum(SUBS[id].free)}字（無料）<br>`).join('');
+  const subs = SUB_ORDER.filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id]).map((id) => `${SUBS[id].name} ${subUse(id)}<br>`).join('');
   t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
