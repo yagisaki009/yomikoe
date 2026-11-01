@@ -959,32 +959,84 @@ const EL_TAGS = {
 };
 const elText = (text, model) => text.replace(TAG_RE, (t) => EL_TAGS[model]?.[t.slice(1, -1)] || '');
 const elVoiceName = () => store.get('elVoices', []).find((v) => v.id === settings.elVoice)?.name || 'ElevenLabs';
+// ElevenLabsは音声を作り終えてから返事をするので、1回が長いと、返事の前にiPhoneの通信が切れる（約1分）。
+// 文の切れ目で600字ほどに分けて2つずつ作り、つないで1つの音声にする（前後の文も渡して、つなぎ目の抑揚をそろえる）
+const EL_PART = 600, EL_PARALLEL = 2;
+function splitForEl(text, max = EL_PART) {
+  const units = text.split('\n').flatMap((line, i, all) => splitSentences(i < all.length - 1 ? `${line}\n` : line).flatMap((u) => splitLong(u, max)));
+  const parts = [];
+  let cur = '';
+  for (const u of units) {
+    if (cur.trim() && cur.length + u.length > max) { parts.push(cur); cur = ''; }
+    cur += u;
+  }
+  parts.push(cur);
+  return parts.map((t) => t.trim()).filter((t) => SPEAKABLE.test(elText(t, 'eleven_v3')));
+}
+// 24kHz・16bit・1chの音（PCM）に、WAVの頭を付ける
+function pcmWav(pcm, rate = 24000) {
+  const fmt = new Uint8Array(16), v = new DataView(fmt.buffer);
+  v.setUint16(0, 1, true); v.setUint16(2, 1, true); v.setUint32(4, rate, true); v.setUint32(8, rate * 2, true); v.setUint16(12, 2, true); v.setUint16(14, 16, true);
+  const head = wavHeader(fmt, pcm.length), out = new Uint8Array(head.length + pcm.length);
+  out.set(head);
+  out.set(pcm, head.length);
+  return out.buffer;
+}
 async function requestEl(text, signal, voice = settings.elVoice, model = settings.elModel) {
   if (!settings.elKey) throw new TtsError('nokey', 'ElevenLabsのキーが入っていません。');
   if (!voice) throw new TtsError('auth', 'ElevenLabsの声が選ばれていません。設定で選んでください。');
+  const parts = splitForEl(text), pcm = new Array(parts.length);
+  const ctrl = new AbortController(), stop = () => ctrl.abort();
+  signal?.addEventListener('abort', stop);
+  let next = 0;
+  const worker = async () => {
+    while (next < parts.length && !ctrl.signal.aborted) {
+      const i = next++;
+      pcm[i] = await requestElPart(parts[i], ctrl.signal, voice, model, parts[i - 1], parts[i + 1]);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: EL_PARALLEL }, worker));
+  } catch (e) {
+    ctrl.abort();
+    throw e;
+  } finally {
+    signal?.removeEventListener('abort', stop);
+  }
+  if (signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+  const all = new Uint8Array(pcm.reduce((a, b) => a + b.length, 0));
+  let o = 0;
+  for (const b of pcm) { all.set(b, o); o += b.length; }
+  return pcmWav(all);
+}
+async function requestElPart(text, signal, voice, model, prev, next) {
+  const body = { text: elText(text, model), model_id: model };
+  // つなぎ目の抑揚をそろえる前後の文（v3は受け付けないので渡さない）
+  if (model !== 'eleven_v3') { if (prev) body.previous_text = elText(prev, model).slice(-300); if (next) body.next_text = elText(next, model).slice(0, 300); }
   for (let attempt = 0; ; attempt++) {
     let res;
     try {
-      // Geminiと同じ24kHzのWAVで受け取り、保存した後でMP3に圧縮する（書き出しのときに混ぜてもつながる）
-      res = await fetch(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=wav_24000`, {
+      // 音だけ（24kHzのPCM）で受け取り、つないでからWAVにする。保存した後でMP3に圧縮する（書き出しのときにGeminiと混ぜてもつながる）
+      res = await fetch(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=pcm_24000`, {
         method: 'POST', signal,
         headers: { 'xi-api-key': settings.elKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: elText(text, model), model_id: model }),
+        body: JSON.stringify(body),
       });
     } catch (e) {
       if (signal?.aborted) throw e;
-      if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
+      if (attempt < 2) { await sleep(1500 * 2 ** attempt); continue; }
       throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
     }
     if (res.ok) {
-      const buf = await res.arrayBuffer();
-      if (audioType(buf) !== 'audio/wav') throw new TtsError('bad', 'ElevenLabsから音声が返ってきませんでした。');
-      return buf;
+      const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.length < 2) throw new TtsError('bad', 'ElevenLabsから音声が返ってきませんでした。');
+      // 念のため、WAVで返ってきたときは音の部分だけを使う
+      return audioType(buf.buffer) === 'audio/wav' ? wavParts(buf).data : buf.subarray(0, buf.length & ~1);
     }
     const raw = await res.text().catch(() => '');
     let code = '', detail = '';
     try { const d = JSON.parse(raw).detail; code = String(d?.status || d?.code || ''); detail = String(d?.message || (typeof d === 'string' ? d : '')); } catch { detail = raw.slice(0, 140); }
-    if (/quota_exceeded/.test(code + raw)) throw new TtsError('subquota', 'ElevenLabsの今月の無料分を使い切りました。');
+    if (/quota_exceeded/.test(code + raw)) throw new TtsError('subquota', 'ElevenLabsの今月のクレジットを使い切りました。');
     if ((res.status === 429 || res.status >= 500) && attempt < 4) { await sleep(2000 * 2 ** attempt); continue; }
     if (/unusual_activity/.test(code + raw)) throw new TtsError('auth', 'ElevenLabsが、無料プランでの利用を止めました（いつもと違う使い方と判断されたようです）。');
     if (/invalid_api_key|missing_permissions/.test(code + raw) || res.status === 401) throw new TtsError('auth', 'ElevenLabsのキーが正しくないか、キーに「Text to Speech」の許可が付いていません。');
