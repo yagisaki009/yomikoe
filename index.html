@@ -378,6 +378,12 @@ input, select, textarea {
     </section>
 
     <section class="group" data-engine="gemini">
+      <h3>1話の作り方</h3>
+      <label class="check"><input id="saveCalls" type="checkbox">回数を節約する（1話を1回で作る）</label>
+      <p class="hint">2,000字ほどまでの話を、1回でまとめて作ります。1,500字の話なら2回が1回になり、1日に作れる話が約2倍になります。そのかわり、押してから鳴るまで、話を作り終えるのを待ちます（数十秒ほど）。前もって「端末に保存」しておいた話は待ちません。切り替えると、次に読み始める文章から効きます（これまでの履歴の音声はそのまま使えます）。</p>
+    </section>
+
+    <section class="group" data-engine="gemini">
       <h3>無料枠を使い切ったとき</h3>
       <label class="check"><input id="geminiFallback" type="checkbox">3.8 Flash Liteの声で続ける</label>
       <p class="hint">Geminiの無料枠は、声のモデルごとに別々に決まっています。いつもの3.8 Flashを使い切ったら、同じ声・同じ「読み方の雰囲気」のまま、軽い3.8 Flash Liteに切り替えて続けます。声の自然さは少し下がります。毎日16〜17時ごろに、3.8 Flashに戻ります。</p>
@@ -540,8 +546,11 @@ const CHUNKING = {
   2: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 1500, max: 1800 } },
   3: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
   4: { first: [250], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
+  // 版5（設定の「回数を節約」）：最初の短い回も作らず、2,000字ほどまでの話を1回で作る。鳴るまでは、話を作り終えるのを待つ
+  5: { first: [], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
 };
 const CHUNK_VERSION = { xai: 1, gemini: 4 };
+const chunkVersion = (engine) => (engine === 'gemini' && settings.saveCalls ? 5 : CHUNK_VERSION[engine]);
 const AHEAD = 3, PARALLEL = 2;
 const CHARS_PER_MIN = 330;
 const RATES = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
@@ -558,7 +567,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -812,7 +821,7 @@ async function findOldWav() {
 class TtsError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 声の組み合わせ（サービス・声・雰囲気）。同じ文章でも組み合わせが違えば別の音声になる
-const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: settings.engine === 'gemini' ? settings.geminiStyle.trim() : '', chunk: CHUNK_VERSION[settings.engine] });
+const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: settings.engine === 'gemini' ? settings.geminiStyle.trim() : '', chunk: chunkVersion(settings.engine) });
 const keyFor = (text, p = curProfile()) => hash(`${p.engine}|${p.voice}|${p.style}|ja|${text}`);
 const keyOf = (engine) => (engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 
@@ -1160,7 +1169,7 @@ function splitLong(s, max) {
   if (rest) out.push(rest);
   return out;
 }
-function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict, chunk = CHUNK_VERSION[engine], marks = null } = {}) {
+function chunkText(raw, { engine = settings.engine, dict: dictText = settings.dict, chunk = chunkVersion(engine), marks = null } = {}) {
   const found = new Map();
   const dict = dictEntries(dictText);
   const chunks = [];
@@ -1461,7 +1470,7 @@ function renderPlay() {
 function setWaiting(on) {
   R.waiting = on;
   markChunk(R.idx, on ? 'loading' : (R.urls.has(R.idx) ? 'ready' : ''));
-  if (on) $('#playerStatus').textContent = '音声を作っています…';
+  if (on) $('#playerStatus').textContent = R.chunks[R.idx]?.chars > 1000 ? '1話分をまとめて作っています…（数十秒かかります）' : '音声を作っています…';
   renderPlay();
 }
 function episodeAt(done) {
@@ -1835,7 +1844,7 @@ if ('mediaSession' in navigator) {
 // 同じ文章を同じ声で読んだ履歴があれば、その時の区切り方で読む（保存済みの音声を使い回すため）
 async function findDoc(text) {
   const { engine, voice, style } = curProfile();
-  for (const chunk of new Set([CHUNK_VERSION[engine], 3, 2, 1])) {
+  for (const chunk of new Set([chunkVersion(engine), 5, 4, 3, 2, 1])) {
     const profile = chunk === 1 ? { engine, voice, style } : { engine, voice, style, chunk };
     for (const p of chunk === 1 ? [profile, { ...profile, chunk: 1 }] : [profile]) {
       const doc = await docGet(docIdOf(text, p, settings.dict, readFilterFor(text)));
@@ -1880,6 +1889,7 @@ function openSettings(msg) {
   $('#dict').value = settings.dict;
   $('#scriptOnly').checked = settings.scriptOnly;
   $('#geminiFallback').checked = settings.geminiFallback;
+  $('#saveCalls').checked = settings.saveCalls;
   $('#msFallback').checked = settings.msFallback;
   $('#msKey').value = settings.msKey;
   $('#msCalm').checked = settings.msCalm;
@@ -1960,6 +1970,7 @@ $('#dict').addEventListener('input', (e) => { settings.dict = e.target.value; sa
 $('#scriptOnly').addEventListener('change', (e) => { settings.scriptOnly = e.target.checked; $('#readAfterword').disabled = !e.target.checked; saveSettings(); });
 $('#readAfterword').addEventListener('change', (e) => { settings.readAfterword = e.target.checked; saveSettings(); });
 $('#geminiFallback').addEventListener('change', (e) => { settings.geminiFallback = e.target.checked; saveSettings(); renderUsage(); });
+$('#saveCalls').addEventListener('change', (e) => { settings.saveCalls = e.target.checked; saveSettings(); });
 function fillMs() {
   const reg = $('#msRegion'), sel = $('#msVoice');
   if (!reg.options.length) for (const [id, name] of Object.entries(MS_REGIONS)) reg.add(new Option(name, id));
