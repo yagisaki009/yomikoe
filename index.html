@@ -111,7 +111,9 @@ body.has-player main { padding-bottom: 190px; }
 /* 端末に保存した段落には、右上に小さな印 */
 .chunk { position: relative; }
 .chunk[data-saved]::after { content: "✓"; position: absolute; top: 7px; right: 5px; font: 700 11px/1 var(--f-ui); color: var(--ok); }
-.chunk[data-saved][data-sub]::after { content: "✓ Microsoftの声"; font-weight: 600; color: var(--muted); }
+.chunk[data-saved][data-sub]::after { content: "✓ Gemini以外の声"; font-weight: 600; color: var(--muted); }
+.chunk[data-saved][data-sub="el"]::after { content: "✓ ElevenLabsの声"; }
+.chunk[data-saved][data-sub="ms"]::after { content: "✓ Microsoftの声"; }
 .offline { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 8px 8px 8px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .offline > span { flex: 1; min-width: 0; }
 .offline b { color: var(--ink); }
@@ -392,6 +394,20 @@ input, select, textarea {
         <p id="msMsg" class="msg" hidden></p>
         <p class="hint">Microsoft Azureの「音声サービス」を無料のプラン（Free F0）で作ると、月50万字（1,500字の話で約330話）まで無料です。超えると止まるだけで、料金はかかりません。地域は、キーを作ったときに選んだものにしてください。Microsoftの声で作った段落は、Geminiが戻ったあとに、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。キーはこの端末の中にだけ保存され、Microsoft以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#microsoft" target="_blank" rel="noopener">説明書き</a>にあります。</p>
       </div>
+      <label class="check"><input id="elFallback" type="checkbox">Microsoftも使い切ったら、ElevenLabsの声で続ける</label>
+      <div id="elBox" class="sub-box">
+        <div class="field-row">
+          <input id="elKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ElevenLabsのキー（sk_で始まる）" aria-label="ElevenLabsのキー">
+          <button type="button" class="btn ghost small" data-reveal="elKey">表示</button>
+        </div>
+        <div class="field-row">
+          <select id="elVoice" aria-label="ElevenLabsの声"></select>
+          <button type="button" id="elPreview" class="btn ghost small">試聴</button>
+        </div>
+        <label class="pick">モデル<select id="elModel"></select></label>
+        <p id="elMsg" class="msg" hidden></p>
+        <p class="hint">ElevenLabsの無料プランは月1万字ほど（1,500字の話で6〜7話）です。超えると止まるだけで、料金はかかりません。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
+      </div>
     </section>
 
     <section class="group" data-engine="gemini">
@@ -501,6 +517,9 @@ const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
 const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
 const MS_REGIONS = { japaneast: '東日本（Japan East）', japanwest: '西日本（Japan West）', eastasia: '香港（East Asia）', southeastasia: 'シンガポール（Southeast Asia）', koreacentral: '韓国（Korea Central）', eastus: '米国東部（East US）', westus2: '米国西部2（West US 2）', westeurope: '西ヨーロッパ（West Europe）' };
 const MS_FREE = 500000;
+// Microsoftも使い切ったときのElevenLabsの声。無料プランは月1万字ほどと少ない
+const EL_FREE = 10000;
+const EL_MODELS = { eleven_multilingual_v2: 'Multilingual v2（安定）', eleven_v3: 'v3（表現が豊か）' };
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
 const SPEAKABLE = /[\p{L}\p{N}]/u;
@@ -532,7 +551,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, msFallback: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', msFallback: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -543,13 +562,14 @@ const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settin
 const API = store.get('apiBase', 'https://api.x.ai/v1');
 const GEMINI_API = store.get('geminiBase', 'https://generativelanguage.googleapis.com/v1beta');
 const msBase = () => store.get('msBase', '') || `https://${settings.msRegion}.tts.speech.microsoft.com`;
+const elBase = () => store.get('elBase', '') || 'https://api.elevenlabs.io';
 
 /* ---------- 料金 ---------- */
 const monthKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 function usage() {
   const u = store.get('usage', null);
-  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0, ms: 0 };
-  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0, ms: u.ms ?? 0 };
+  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 };
+  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0, el: u.el ?? 0, ms: u.ms ?? 0 };
 }
 function addUsage(engine, n) { const u = usage(); u[engine] = Math.max(0, u[engine] + n); store.set('usage', u); renderUsage(); }
 const costYen = (u) => u.xai * settings.price / 1e6 * settings.fx;
@@ -575,7 +595,8 @@ function noteQuotaHit(model) {
 }
 function geminiDayLine() {
   const today = geminiToday(), hit = store.get('quotaHit', null), model = geminiModel();
-  if (!model && msReady()) return `今日のGeminiの無料枠は使い切ったので、Microsoftの声で読みます（今月${fmtNum(usage().ms)}字 / ${fmtNum(MS_FREE)}字まで無料）。Geminiは毎日16〜17時ごろに戻ります`;
+  const sub = !model && nextSub();
+  if (sub) return `今日のGeminiの無料枠は使い切ったので、${SUBS[sub].name}の声で読みます（今月${fmtNum(usage()[sub])}字 / ${fmtNum(SUBS[sub].free)}字まで無料）。Geminiは毎日16〜17時ごろに戻ります`;
   if (!model) return `今日の無料枠は使い切りました（この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   if (model !== GEMINI_MODELS[0]) return `${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}で読んでいます（今日この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   return `今日この端末で使った回数 ${today.n}回${hit ? `（前回は${hit.n}回で上限に達しました）` : ''} ・ 毎日16〜17時ごろに0に戻ります`;
@@ -870,8 +891,7 @@ function tellFallback(model) {
   showNotice(`今日の${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}の声で続けます。声の自然さが少し変わります。`);
 }
 
-/* ---------- Geminiを使い切ったときの代わり（Microsoft） ---------- */
-const msReady = () => settings.msFallback && !!settings.msKey;
+/* ---------- Geminiを使い切ったときの代わり（Microsoft → ElevenLabs） ---------- */
 const msVoiceName = () => MS_VOICES[settings.msVoice]?.[1] || settings.msVoice;
 const escXml = (t) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 const MS_TAGS = { pause: '<break time="600ms"/>', 'long-pause': '<break time="1500ms"/>' };
@@ -904,33 +924,101 @@ async function requestMs(text, voice, signal) {
     }
     const detail = errorDetail(await res.text().catch(() => ''));
     // 無料のプランは、月の分を使い切ると「quota」と返して止まる（料金はかからない）
-    if ((res.status === 403 || res.status === 429) && /quota/i.test(detail)) throw new TtsError('msquota', `今月のMicrosoftの無料分（${fmtNum(MS_FREE)}字）を使い切りました。来月になると戻ります。`);
+    if ((res.status === 403 || res.status === 429) && /quota/i.test(detail)) throw new TtsError('subquota', `今月のMicrosoftの無料分（${fmtNum(MS_FREE)}字）を使い切りました。来月になると戻ります。`);
     if ((res.status === 429 || res.status >= 500) && attempt < 4) { await sleep(2000 * 2 ** attempt); continue; }
     if (res.status === 401) throw new TtsError('auth', 'Microsoftのキーが正しくないか、地域がキーと合っていません。設定で確かめてください。');
-    if (res.status === 429) throw new TtsError('msquota', 'Microsoftが受け付けませんでした。混み合っているか、今月の無料分を使い切ったようです。少し待ってから、もう一度試してください。');
+    if (res.status === 429) throw new TtsError('subquota', 'Microsoftが受け付けませんでした。混み合っているか、今月の無料分を使い切ったようです。少し待ってから、もう一度試してください。');
     throw new TtsError('bad', `Microsoftの声を作れませんでした（${res.status}）。${detail.slice(0, 140)}`);
   }
 }
-// Microsoftの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう覚えておく
-const subKeys = new Set(store.get('subKeys', []));
+// ElevenLabsの間の指示：Multilingual v2は <break>、v3は [short pause] などの書き方。それ以外の表現タグは外す
+const EL_TAGS = {
+  eleven_multilingual_v2: { pause: '<break time="0.6s" />', 'long-pause': '<break time="1.5s" />' },
+  eleven_v3: { pause: '[short pause]', 'long-pause': '[long pause]', sigh: '[sighs]', laugh: '[laughs]', breath: '[breathes]' },
+};
+const elText = (text, model) => text.replace(TAG_RE, (t) => EL_TAGS[model]?.[t.slice(1, -1)] || '');
+const elVoiceName = () => store.get('elVoices', []).find((v) => v.id === settings.elVoice)?.name || 'ElevenLabs';
+async function requestEl(text, signal, voice = settings.elVoice, model = settings.elModel) {
+  if (!settings.elKey) throw new TtsError('nokey', 'ElevenLabsのキーが入っていません。');
+  if (!voice) throw new TtsError('auth', 'ElevenLabsの声が選ばれていません。設定で選んでください。');
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      // Geminiと同じ24kHzのWAVで受け取り、保存した後でMP3に圧縮する（書き出しのときに混ぜてもつながる）
+      res = await fetch(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=wav_24000`, {
+        method: 'POST', signal,
+        headers: { 'xi-api-key': settings.elKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: elText(text, model), model_id: model }),
+      });
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
+      throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+    }
+    if (res.ok) {
+      const buf = await res.arrayBuffer();
+      if (audioType(buf) !== 'audio/wav') throw new TtsError('bad', 'ElevenLabsから音声が返ってきませんでした。');
+      return buf;
+    }
+    const raw = await res.text().catch(() => '');
+    let code = '', detail = '';
+    try { const d = JSON.parse(raw).detail; code = String(d?.status || d?.code || ''); detail = String(d?.message || (typeof d === 'string' ? d : '')); } catch { detail = raw.slice(0, 140); }
+    if (/quota_exceeded/.test(code + raw)) throw new TtsError('subquota', 'ElevenLabsの今月の無料分を使い切りました。');
+    if ((res.status === 429 || res.status >= 500) && attempt < 4) { await sleep(2000 * 2 ** attempt); continue; }
+    if (/unusual_activity/.test(code + raw)) throw new TtsError('auth', 'ElevenLabsが、無料プランでの利用を止めました（いつもと違う使い方と判断されたようです）。');
+    if (/invalid_api_key|missing_permissions/.test(code + raw) || res.status === 401) throw new TtsError('auth', 'ElevenLabsのキーが正しくないか、キーに「Text to Speech」の許可が付いていません。');
+    if (res.status === 402 || /paid|subscription|tier/i.test(code + detail)) throw new TtsError('auth', 'この声かモデルは、ElevenLabsの有料プランでないと使えません。設定で別の声を選んでください。');
+    if (/voice/i.test(code + detail)) throw new TtsError('auth', 'ElevenLabsの声が見つかりません。設定で選び直してください。');
+    throw new TtsError('bad', `ElevenLabsの声を作れませんでした（${res.status}）。${detail.slice(0, 140)}`);
+  }
+}
+
+// 代わりの声は、Microsoft（月50万字）→ ElevenLabs（月1万字）の順。使えなかったもの（今月の分を使い切った等）は、その日はもう試さない
+const SUBS = {
+  el: { name: 'ElevenLabs', free: EL_FREE, ready: () => settings.elFallback && !!settings.elKey && !!settings.elVoice, voice: elVoiceName, make: (t, sig) => requestEl(t, sig) },
+  ms: { name: 'Microsoft', free: MS_FREE, ready: () => settings.msFallback && !!settings.msKey, voice: msVoiceName, make: (t, sig) => requestMs(t, settings.msVoice, sig) },
+};
+const SUB_ORDER = ['ms', 'el'];
+function subsOut() { const o = store.get('subOut', null); return o && o.day === geminiDay() ? o.ids : []; }
+function markSubOut(id) { const ids = subsOut(); if (!ids.includes(id)) store.set('subOut', { day: geminiDay(), ids: [...ids, id] }); }
+const nextSub = () => SUB_ORDER.find((id) => SUBS[id].ready() && !subsOut().includes(id));
+const subNames = (ids) => [...new Set(ids)].map((id) => SUBS[id]?.name || id).join('・');
+const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の${subNames(SUB_ORDER.filter((id) => SUBS[id].ready()))}も、今日はもう使えません。Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
+// 代わりの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう、どの声で作ったかを覚えておく
+const subKeys = new Map(store.get('subKeys', []).map((x) => (Array.isArray(x) ? x : [x, 'ms'])));
 const saveSubKeys = () => store.set('subKeys', [...subKeys]);
-let toldStandIn = '';
-function tellStandIn() {
-  if (toldStandIn === geminiDay()) return;
-  toldStandIn = geminiDay();
-  showNotice(`今日のGeminiの無料枠をすべて使い切ったので、Microsoftの声（${msVoiceName()}）で続けます。Geminiが戻る16〜17時ごろより後に、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。`);
+const told = new Set();
+function tellStandIn(id, why) {
+  if (told.has(`${geminiDay()}|${id}`)) return;
+  told.add(`${geminiDay()}|${id}`);
+  const sub = SUBS[id];
+  showNotice(why
+    ? `${why}${sub.name}の声（${sub.voice()}）で続けます。`
+    : `今日のGeminiの無料枠をすべて使い切ったので、${sub.name}の声（${sub.voice()}）で続けます。Geminiが戻る16〜17時ごろより後に、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。`);
 }
 async function makeStandIn(text, signal, key) {
-  const n = text.length;
-  addUsage('ms', n);
-  let buf;
-  try { buf = await requestMs(text, settings.msVoice, signal); }
-  catch (e) { addUsage('ms', -n); throw e; }
-  tellStandIn();
-  subKeys.add(key);
-  saveSubKeys();
-  cachePut(key, buf);
-  return toBlob(buf);
+  let why = '', lastErr = null;
+  for (let id; (id = nextSub()); ) {
+    const n = text.length;
+    addUsage(id, n);
+    try {
+      const buf = await SUBS[id].make(text, signal);
+      tellStandIn(id, why);
+      subKeys.set(key, id);
+      saveSubKeys();
+      cachePut(key, buf);
+      return toBlob(buf);
+    } catch (e) {
+      addUsage(id, -n);
+      // 通信できないときや中止したときは、次の声でも同じなので、そのまま伝える
+      if (e.name === 'AbortError' || e.kind === 'net') throw e;
+      markSubOut(id);
+      why = e.message;
+      lastErr = e;
+    }
+  }
+  // 無料分を使い切った以外の理由（キーの間違い等）なら、その理由を伝える
+  throw lastErr && lastErr.kind !== 'subquota' ? lastErr : allOutError();
 }
 
 // 読み上げと書き出しが同じ段落を同時に頼んだときは、先に頼んだほうの出来上がりを使い、Geminiに二重に送らない
@@ -942,7 +1030,11 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
     const hit = await cacheGet(key);
     if (hit && hit.buf) return toBlob(hit.buf);
     try { return await makeSpeech(text, signal, p, key); }
-    catch (e) { if (e.kind === 'quota' && standIn && msReady()) return makeStandIn(text, signal, key); throw e; }
+    catch (e) {
+      if (e.kind !== 'quota' || !standIn) throw e;
+      if (nextSub()) return makeStandIn(text, signal, key);
+      throw SUB_ORDER.some((id) => SUBS[id].ready()) ? allOutError() : e;
+    }
   })();
   making.set(key, job);
   try { return await job; } finally { if (making.get(key) === job) making.delete(key); }
@@ -1248,7 +1340,7 @@ async function renderEstimate() {
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
   const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
-    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && msReady() ? `Microsoftの声で作る分 約<b>${fmtNum(fresh)}</b>字（無料）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
+    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && nextSub() ? `${SUBS[nextSub()].name}の声で作る分 約<b>${fmtNum(fresh)}</b>字（無料）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
   $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
@@ -1685,8 +1777,8 @@ function handleError(e) {
     showNotice(e.message, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'quota' && !settings.geminiFallback) {
     showNotice(e.message, `${MODEL_NAME[GEMINI_MODELS[1]]}で続ける`, () => { settings.geminiFallback = true; saveSettings(); hideNotice(); resume(); });
-  } else if (e.kind === 'quota' && !msReady()) {
-    showNotice(`${e.message}設定でMicrosoftのキーを入れると、続きも無料で読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
+  } else if (e.kind === 'quota' && !SUB_ORDER.some((id) => SUBS[id].ready())) {
+    showNotice(`${e.message}設定でMicrosoftかElevenLabsのキーを入れると、続きも無料で読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'budget') {
     showNotice(`${e.message}上限は設定で変えられます。`, '今回は続ける', () => { overBudgetOk = true; hideNotice(); resume(); });
   } else {
@@ -1780,6 +1872,11 @@ function openSettings(msg) {
   $('#msBox').hidden = !settings.msFallback;
   $('#msMsg').hidden = true;
   fillMs();
+  $('#elFallback').checked = settings.elFallback;
+  $('#elKey').value = settings.elKey;
+  $('#elBox').hidden = !settings.elFallback;
+  $('#elMsg').hidden = true;
+  loadElVoices();
   $('#readAfterword').checked = settings.readAfterword;
   $('#readAfterword').disabled = !settings.scriptOnly;
   renderEngine();
@@ -1866,17 +1963,18 @@ $('#msFallback').addEventListener('change', (e) => { settings.msFallback = e.tar
 $('#msKey').addEventListener('input', (e) => { settings.msKey = e.target.value.trim(); saveSettings(); $('#msMsg').hidden = true; renderUsage(); });
 $('#msRegion').addEventListener('change', (e) => { settings.msRegion = e.target.value; saveSettings(); $('#msMsg').hidden = true; });
 $('#msVoice').addEventListener('change', (e) => { settings.msVoice = e.target.value; saveSettings(); });
-$('#msPreview').addEventListener('click', async () => {
-  const btn = $('#msPreview'), msg = $('#msMsg');
+// 代わりの声の試聴（Geminiの回数は使わない）
+async function previewSub(id) {
+  const btn = $(`#${id}Preview`), msg = $(`#${id}Msg`);
   unlock(previewAudio);
   if (R.wantPlay) togglePlay();
   btn.disabled = true;
   btn.textContent = '作成中…';
   msg.hidden = true;
   try {
-    const buf = await requestMs(PREVIEW_TEXT, settings.msVoice);
-    addUsage('ms', PREVIEW_TEXT.length);
-    previewAudio.src = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
+    const buf = await SUBS[id].make(PREVIEW_TEXT);
+    addUsage(id, PREVIEW_TEXT.length);
+    previewAudio.src = URL.createObjectURL(toBlob(buf));
     await previewAudio.play();
   } catch (e) {
     msg.textContent = e.message;
@@ -1885,8 +1983,52 @@ $('#msPreview').addEventListener('click', async () => {
     btn.disabled = false;
     btn.textContent = '試聴';
   }
-});
-$('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, ms: 0 }); renderUsage(); });
+}
+$('#msPreview').addEventListener('click', () => previewSub('ms'));
+$('#elPreview').addEventListener('click', () => previewSub('el'));
+
+// ElevenLabsの声は、そのアカウントの一覧（Voices）から選ぶ。日本語の声を上に並べる
+let elLoaded = false;
+function fillEl() {
+  const sel = $('#elVoice'), list = store.get('elVoices', []);
+  sel.textContent = '';
+  if (!list.length) sel.add(new Option(settings.elKey ? '声の一覧を読み込んでいます…' : 'キーを入れると声の一覧が出ます', ''));
+  for (const v of list) sel.add(new Option(v.label, v.id));
+  sel.value = settings.elVoice;
+  const m = $('#elModel');
+  if (!m.options.length) for (const [id, name] of Object.entries(EL_MODELS)) m.add(new Option(name, id));
+  m.value = settings.elModel;
+}
+async function loadElVoices() {
+  fillEl();
+  if (elLoaded || !settings.elKey) return;
+  try {
+    const res = await fetch(`${elBase()}/v1/voices`, { headers: { 'xi-api-key': settings.elKey } });
+    if (!res.ok) {
+      if (res.status === 401) { $('#elMsg').textContent = 'ElevenLabsのキーが正しくないか、キーに「Voices」の読み取りの許可が付いていません。'; $('#elMsg').hidden = false; }
+      return;
+    }
+    const GENDER = { female: '女性', male: '男性' };
+    const list = ((await res.json()).voices || []).filter((v) => v.voice_id).map((v) => {
+      const l = v.labels || {}, ja = /japan|^ja$|日本/i.test([l.language, l.accent, l.description, v.name].join(' '));
+      const tags = [GENDER[l.gender] || l.gender, ja && '日本語'].filter(Boolean).join('・');
+      return { id: v.voice_id, name: v.name, ja, label: tags ? `${v.name}（${tags}）` : v.name };
+    });
+    list.sort((a, b) => b.ja - a.ja);
+    if (!list.length) return;
+    elLoaded = true;
+    store.set('elVoices', list);
+    if (!list.some((v) => v.id === settings.elVoice)) { settings.elVoice = list[0].id; saveSettings(); }
+    fillEl();
+    renderUsage();
+  } catch {}
+}
+$('#elFallback').addEventListener('change', (e) => { settings.elFallback = e.target.checked; saveSettings(); $('#elBox').hidden = !e.target.checked; renderUsage(); });
+$('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; $('#elMsg').hidden = true; renderUsage(); });
+$('#elKey').addEventListener('change', loadElVoices);
+$('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.value; saveSettings(); });
+$('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); });
+$('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
   if (!confirm('保存した音声と履歴をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
   await cacheClear();
@@ -1898,9 +2040,10 @@ function renderUsage() {
   const t = $('#usageText');
   if (!t) return;
   const u = usage(), y = costYen(u);
-  const model = geminiModel(), now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : !model && msReady() ? '・今はMicrosoftの声' : '';
-  const ms = settings.msKey || u.ms ? `Microsoft 今月${fmtNum(u.ms)}字 / ${fmtNum(MS_FREE)}字（無料）<br>` : '';
-  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${ms}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
+  const model = geminiModel(), sub = !model && nextSub();
+  const now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : sub ? `・今は${SUBS[sub].name}の声` : '';
+  const subs = SUB_ORDER.filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id]).map((id) => `${SUBS[id].name} 今月${fmtNum(u[id])}字 / ${fmtNum(SUBS[id].free)}字（無料）<br>`).join('');
+  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
   $('#usageMeter').classList.toggle('over', ratio >= 1);
@@ -2041,8 +2184,8 @@ async function renderHistory() {
     if (playing) state.append(make('b', null, R.wantPlay ? '再生中' : '開いている'), ' ・ ');
     const job = saver.job?.id === d.id ? saver.job : null, queued = saver.queue.includes(d.id);
     state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ `);
-    const subs = d.keys.filter((k) => keys.has(k) && subKeys.has(k)).length;
-    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), subs ? `（うち${subs}段落はMicrosoftの声）` : '');
+    const subIds = d.keys.filter((k) => keys.has(k) && subKeys.has(k)).map((k) => subKeys.get(k)), subs = subIds.length;
+    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : '');
     else state.append(job ? `端末に保存しています… ${job.done}/${d.n}段落` : queued ? `保存の順番待ち（${saved}/${d.n}段落）` : `端末に保存 ${saved}/${d.n}段落`);
     const bar = make('span', 'meter');
     const fill = make('span');
@@ -2193,7 +2336,7 @@ function noteSaved(k) {
   if (!R.chunkKeys.includes(k) || R.saved.has(k)) return;
   R.saved.add(k);
   const items = $('#chunkList').children;
-  R.chunkKeys.forEach((key, i) => { if (key === k) { items[i]?.setAttribute('data-saved', ''); items[i]?.toggleAttribute('data-sub', subKeys.has(k)); } });
+  R.chunkKeys.forEach((key, i) => { if (key === k) { items[i]?.setAttribute('data-saved', ''); if (subKeys.has(k)) items[i]?.setAttribute('data-sub', subKeys.get(k)); else items[i]?.removeAttribute('data-sub'); } });
   renderOfflineBar();
 }
 async function refreshSaved() {
@@ -2201,7 +2344,7 @@ async function refreshSaved() {
   if (ck !== R.chunkKeys) return;
   R.saved = new Set(ck.filter((k) => keys.has(k)));
   const items = $('#chunkList').children;
-  ck.forEach((k, i) => { items[i]?.toggleAttribute('data-saved', R.saved.has(k)); items[i]?.toggleAttribute('data-sub', R.saved.has(k) && subKeys.has(k)); });
+  ck.forEach((k, i) => { items[i]?.toggleAttribute('data-saved', R.saved.has(k)); if (R.saved.has(k) && subKeys.has(k)) items[i]?.setAttribute('data-sub', subKeys.get(k)); else items[i]?.removeAttribute('data-sub'); });
   renderOfflineBar();
 }
 function renderOfflineBar() {
@@ -2210,14 +2353,14 @@ function renderOfflineBar() {
   if (!n) return;
   const s = R.chunkKeys.filter((k) => R.saved.has(k)).length, id = R.doc?.id;
   const busy = id && (saver.job?.id === id || saver.queue.includes(id));
-  const subs = R.chunkKeys.filter((k) => R.saved.has(k) && subKeys.has(k)).length;
+  const subIds = R.chunkKeys.filter((k) => R.saved.has(k) && subKeys.has(k)).map((k) => subKeys.get(k)), subs = subIds.length;
   const remake = s >= n && subs && !busy && R.profile.engine === 'gemini' && !!geminiModel();
   bar.classList.toggle('full', s >= n);
   btn.hidden = s >= n && !remake;
   btn.disabled = !id;
   btn.dataset.act = busy ? 'stop' : remake ? 'remake' : 'save';
   if (s >= n) {
-    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${subs ? `（うち${subs}段落はMicrosoftの声）` : '（電波なしで聞けます）'}`;
+    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : '（電波なしで聞けます）'}`;
     btn.textContent = `Geminiの声で作り直す（${subs}回）`;
   }
   else if (busy) { $('#offlineText').innerHTML = `端末に保存しています… <b>${s}</b>/${n}段落`; btn.textContent = 'やめる'; }
