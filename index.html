@@ -111,6 +111,7 @@ body.has-player main { padding-bottom: 190px; }
 /* 端末に保存した段落には、右上に小さな印 */
 .chunk { position: relative; }
 .chunk[data-saved]::after { content: "✓"; position: absolute; top: 7px; right: 5px; font: 700 11px/1 var(--f-ui); color: var(--ok); }
+.chunk[data-saved][data-sub]::after { content: "✓ Microsoftの声"; font-weight: 600; color: var(--muted); }
 .offline { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 8px 8px 8px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .offline > span { flex: 1; min-width: 0; }
 .offline b { color: var(--ink); }
@@ -240,6 +241,8 @@ input, select, textarea {
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
 .seg small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
 .msg { margin: 0; font-size: 14px; color: var(--err); }
+.pick { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; font-size: 14px; }
+.sub-box { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -375,6 +378,20 @@ input, select, textarea {
       <h3>無料枠を使い切ったとき</h3>
       <label class="check"><input id="geminiFallback" type="checkbox">3.8 Flash Liteの声で続ける</label>
       <p class="hint">Geminiの無料枠は、声のモデルごとに別々に決まっています。いつもの3.8 Flashを使い切ったら、同じ声・同じ「読み方の雰囲気」のまま、軽い3.8 Flash Liteに切り替えて続けます。声の自然さは少し下がります。毎日16〜17時ごろに、3.8 Flashに戻ります。</p>
+      <label class="check"><input id="msFallback" type="checkbox">それも使い切ったら、Microsoftの声で続ける</label>
+      <div id="msBox" class="sub-box">
+        <div class="field-row">
+          <input id="msKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Microsoftのキー（キー1）" aria-label="Microsoftのキー">
+          <button type="button" class="btn ghost small" data-reveal="msKey">表示</button>
+        </div>
+        <label class="pick">地域<select id="msRegion"></select></label>
+        <div class="field-row">
+          <select id="msVoice" aria-label="Microsoftの声"></select>
+          <button type="button" id="msPreview" class="btn ghost small">試聴</button>
+        </div>
+        <p id="msMsg" class="msg" hidden></p>
+        <p class="hint">Microsoft Azureの「音声サービス」を無料のプラン（Free F0）で作ると、月50万字（1,500字の話で約330話）まで無料です。超えると止まるだけで、料金はかかりません。地域は、キーを作ったときに選んだものにしてください。Microsoftの声で作った段落は、Geminiが戻ったあとに、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。キーはこの端末の中にだけ保存され、Microsoft以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#microsoft" target="_blank" rel="noopener">説明書き</a>にあります。</p>
+      </div>
     </section>
 
     <section class="group" data-engine="gemini">
@@ -480,6 +497,10 @@ const GEMINI_VOICES = { Achernar: ['f', 'やわらか'], Achird: ['m', '親し�
 const GEMINI_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
 const MODEL_NAME = { 'gemini-3.8-flash-tts': '3.8 Flash', 'gemini-3.8-flash-lite-tts': '3.8 Flash Lite' };
 const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
+// Geminiを全部使い切ったときの代わり：Microsoft（Azure）の声。無料のプラン（F0）なら月50万字まで無料で、超えると止まるだけ
+const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
+const MS_REGIONS = { japaneast: '東日本（Japan East）', japanwest: '西日本（Japan West）', eastasia: '香港（East Asia）', southeastasia: 'シンガポール（Southeast Asia）', koreacentral: '韓国（Korea Central）', eastus: '米国東部（East US）', westus2: '米国西部2（West US 2）', westeurope: '西ヨーロッパ（West Europe）' };
+const MS_FREE = 500000;
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
 const SPEAKABLE = /[\p{L}\p{N}]/u;
@@ -487,12 +508,14 @@ const SPEAKABLE = /[\p{L}\p{N}]/u;
 // 版2はGeminiの1日の回数を節約するため大きくまとめる（1回の音声の上限は約10分なので、1,800字までに抑える）。
 // 区切り方が変わると保存済みの音声を使い回せないので、読み上げごとにどの版で区切ったかを覚えておく
 // 版3は、題名だけ・最後の数十字だけで1回使わないよう、小さい回は次の文で埋め、短い残りは前の回にまとめる
+// 版4は、無料枠が1日10回ほどしかないので、1回目を250字にして、1,500字の話を2回で作る（2回目は1回目と同時に作り始める）
 const CHUNKING = {
   1: { first: [80, 250], xai: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } },
   2: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 1500, max: 1800 } },
   3: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
+  4: { first: [250], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
 };
-const CHUNK_VERSION = { xai: 1, gemini: 3 };
+const CHUNK_VERSION = { xai: 1, gemini: 4 };
 const AHEAD = 3, PARALLEL = 2;
 const CHARS_PER_MIN = 330;
 const RATES = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
@@ -509,7 +532,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, msFallback: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -519,13 +542,14 @@ const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settin
 // 動作確認のときだけ宛先を差し替えられるようにしてある
 const API = store.get('apiBase', 'https://api.x.ai/v1');
 const GEMINI_API = store.get('geminiBase', 'https://generativelanguage.googleapis.com/v1beta');
+const msBase = () => store.get('msBase', '') || `https://${settings.msRegion}.tts.speech.microsoft.com`;
 
 /* ---------- 料金 ---------- */
 const monthKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 function usage() {
   const u = store.get('usage', null);
-  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0 };
-  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0 };
+  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0, ms: 0 };
+  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0, ms: u.ms ?? 0 };
 }
 function addUsage(engine, n) { const u = usage(); u[engine] = Math.max(0, u[engine] + n); store.set('usage', u); renderUsage(); }
 const costYen = (u) => u.xai * settings.price / 1e6 * settings.fx;
@@ -551,6 +575,7 @@ function noteQuotaHit(model) {
 }
 function geminiDayLine() {
   const today = geminiToday(), hit = store.get('quotaHit', null), model = geminiModel();
+  if (!model && msReady()) return `今日のGeminiの無料枠は使い切ったので、Microsoftの声で読みます（今月${fmtNum(usage().ms)}字 / ${fmtNum(MS_FREE)}字まで無料）。Geminiは毎日16〜17時ごろに戻ります`;
   if (!model) return `今日の無料枠は使い切りました（この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   if (model !== GEMINI_MODELS[0]) return `${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}で読んでいます（今日この端末で${today.n}回）。毎日16〜17時ごろに戻ります`;
   return `今日この端末で使った回数 ${today.n}回${hit ? `（前回は${hit.n}回で上限に達しました）` : ''} ・ 毎日16〜17時ごろに0に戻ります`;
@@ -641,7 +666,7 @@ async function trimCache(force = false) {
 }
 const audioType = (buf) => (new Uint8Array(buf, 0, 4).join() === '82,73,70,70' ? 'audio/wav' : 'audio/mpeg');
 const toBlob = (buf) => new Blob([buf], { type: audioType(buf) });
-const cacheClear = () => { wavKeys.clear(); saveWavKeys(); return Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear()))).then(refreshSaved); };
+const cacheClear = () => { wavKeys.clear(); saveWavKeys(); subKeys.clear(); saveSubKeys(); return Promise.all(['audio', 'docs', 'texts'].map((name) => idbStore(name, 'readwrite', (s) => s.clear()))).then(refreshSaved); };
 const cacheKeys = async () => new Set((await idb('readonly', (s) => s.getAllKeys())) || []);
 async function cacheSize() {
   const db = await openDb();
@@ -845,14 +870,79 @@ function tellFallback(model) {
   showNotice(`今日の${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}の声で続けます。声の自然さが少し変わります。`);
 }
 
+/* ---------- Geminiを使い切ったときの代わり（Microsoft） ---------- */
+const msReady = () => settings.msFallback && !!settings.msKey;
+const msVoiceName = () => MS_VOICES[settings.msVoice]?.[1] || settings.msVoice;
+const escXml = (t) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
+const MS_TAGS = { pause: '<break time="600ms"/>', 'long-pause': '<break time="1500ms"/>' };
+// 間の指示は休みに置き換え、それ以外の表現タグは外す。段落の切れ目には少し間を入れる
+function msSsml(text, voice) {
+  let body = '', last = 0;
+  for (const m of text.matchAll(TAG_RE)) { body += escXml(text.slice(last, m.index)) + (MS_TAGS[m[0].slice(1, -1)] || ''); last = m.index + m[0].length; }
+  body = (body + escXml(text.slice(last))).replace(/\n+/g, '<break time="400ms"/>');
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ja-JP"><voice name="${voice}">${body}</voice></speak>`;
+}
+async function requestMs(text, voice, signal) {
+  if (!settings.msKey) throw new TtsError('nokey', 'Microsoftのキーが入っていません。');
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(`${msBase()}/cognitiveservices/v1`, {
+        method: 'POST', signal,
+        headers: { 'Ocp-Apim-Subscription-Key': settings.msKey, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-24khz-96kbitrate-mono-mp3' },
+        body: msSsml(text, voice),
+      });
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
+      throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+    }
+    if (res.ok) {
+      const buf = await res.arrayBuffer();
+      if (!buf.byteLength) throw new TtsError('bad', 'Microsoftから音声が返ってきませんでした。');
+      return buf;
+    }
+    const detail = errorDetail(await res.text().catch(() => ''));
+    // 無料のプランは、月の分を使い切ると「quota」と返して止まる（料金はかからない）
+    if ((res.status === 403 || res.status === 429) && /quota/i.test(detail)) throw new TtsError('msquota', `今月のMicrosoftの無料分（${fmtNum(MS_FREE)}字）を使い切りました。来月になると戻ります。`);
+    if ((res.status === 429 || res.status >= 500) && attempt < 4) { await sleep(2000 * 2 ** attempt); continue; }
+    if (res.status === 401) throw new TtsError('auth', 'Microsoftのキーが正しくないか、地域がキーと合っていません。設定で確かめてください。');
+    if (res.status === 429) throw new TtsError('msquota', 'Microsoftが受け付けませんでした。混み合っているか、今月の無料分を使い切ったようです。少し待ってから、もう一度試してください。');
+    throw new TtsError('bad', `Microsoftの声を作れませんでした（${res.status}）。${detail.slice(0, 140)}`);
+  }
+}
+// Microsoftの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう覚えておく
+const subKeys = new Set(store.get('subKeys', []));
+const saveSubKeys = () => store.set('subKeys', [...subKeys]);
+let toldStandIn = '';
+function tellStandIn() {
+  if (toldStandIn === geminiDay()) return;
+  toldStandIn = geminiDay();
+  showNotice(`今日のGeminiの無料枠をすべて使い切ったので、Microsoftの声（${msVoiceName()}）で続けます。Geminiが戻る16〜17時ごろより後に、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。`);
+}
+async function makeStandIn(text, signal, key) {
+  const n = text.length;
+  addUsage('ms', n);
+  let buf;
+  try { buf = await requestMs(text, settings.msVoice, signal); }
+  catch (e) { addUsage('ms', -n); throw e; }
+  tellStandIn();
+  subKeys.add(key);
+  saveSubKeys();
+  cachePut(key, buf);
+  return toBlob(buf);
+}
+
 // 読み上げと書き出しが同じ段落を同時に頼んだときは、先に頼んだほうの出来上がりを使い、Geminiに二重に送らない
 const making = new Map();
-async function synth(text, signal, p = curProfile()) {
+async function synth(text, signal, p = curProfile(), standIn = true) {
   const key = keyFor(text, p), other = making.get(key);
   if (other) { try { return await other; } catch { /* 先のほうが失敗・中止したら、こちらで作る */ } }
   const job = (async () => {
     const hit = await cacheGet(key);
-    return hit && hit.buf ? toBlob(hit.buf) : makeSpeech(text, signal, p, key);
+    if (hit && hit.buf) return toBlob(hit.buf);
+    try { return await makeSpeech(text, signal, p, key); }
+    catch (e) { if (e.kind === 'quota' && standIn && msReady()) return makeStandIn(text, signal, key); throw e; }
   })();
   making.set(key, job);
   try { return await job; } finally { if (making.get(key) === job) making.delete(key); }
@@ -887,6 +977,7 @@ async function makeSpeech(text, signal, p, key) {
         } else {
           buf = await res.arrayBuffer();
         }
+        if (subKeys.delete(key)) saveSubKeys();
         cachePut(key, buf);
         return toBlob(buf);
       }
@@ -1157,7 +1248,7 @@ async function renderEstimate() {
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
   const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
-    ? (needed ? `Geminiに送る回数 約<b>${needed}</b>回（無料）` : '<b>✓ 端末に保存済み</b>（回数を使いません）')
+    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && msReady() ? `Microsoftの声で作る分 約<b>${fmtNum(fresh)}</b>字（無料）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
   $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
@@ -1594,6 +1685,8 @@ function handleError(e) {
     showNotice(e.message, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'quota' && !settings.geminiFallback) {
     showNotice(e.message, `${MODEL_NAME[GEMINI_MODELS[1]]}で続ける`, () => { settings.geminiFallback = true; saveSettings(); hideNotice(); resume(); });
+  } else if (e.kind === 'quota' && !msReady()) {
+    showNotice(`${e.message}設定でMicrosoftのキーを入れると、続きも無料で読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'budget') {
     showNotice(`${e.message}上限は設定で変えられます。`, '今回は続ける', () => { overBudgetOk = true; hideNotice(); resume(); });
   } else {
@@ -1637,7 +1730,7 @@ if ('mediaSession' in navigator) {
 // 同じ文章を同じ声で読んだ履歴があれば、その時の区切り方で読む（保存済みの音声を使い回すため）
 async function findDoc(text) {
   const { engine, voice, style } = curProfile();
-  for (const chunk of new Set([CHUNK_VERSION[engine], 2, 1])) {
+  for (const chunk of new Set([CHUNK_VERSION[engine], 3, 2, 1])) {
     const profile = chunk === 1 ? { engine, voice, style } : { engine, voice, style, chunk };
     for (const p of chunk === 1 ? [profile, { ...profile, chunk: 1 }] : [profile]) {
       const doc = await docGet(docIdOf(text, p, settings.dict, readFilterFor(text)));
@@ -1682,6 +1775,11 @@ function openSettings(msg) {
   $('#dict').value = settings.dict;
   $('#scriptOnly').checked = settings.scriptOnly;
   $('#geminiFallback').checked = settings.geminiFallback;
+  $('#msFallback').checked = settings.msFallback;
+  $('#msKey').value = settings.msKey;
+  $('#msBox').hidden = !settings.msFallback;
+  $('#msMsg').hidden = true;
+  fillMs();
   $('#readAfterword').checked = settings.readAfterword;
   $('#readAfterword').disabled = !settings.scriptOnly;
   renderEngine();
@@ -1749,7 +1847,46 @@ $('#dict').addEventListener('input', (e) => { settings.dict = e.target.value; sa
 $('#scriptOnly').addEventListener('change', (e) => { settings.scriptOnly = e.target.checked; $('#readAfterword').disabled = !e.target.checked; saveSettings(); });
 $('#readAfterword').addEventListener('change', (e) => { settings.readAfterword = e.target.checked; saveSettings(); });
 $('#geminiFallback').addEventListener('change', (e) => { settings.geminiFallback = e.target.checked; saveSettings(); renderUsage(); });
-$('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0 }); renderUsage(); });
+function fillMs() {
+  const reg = $('#msRegion'), sel = $('#msVoice');
+  if (!reg.options.length) for (const [id, name] of Object.entries(MS_REGIONS)) reg.add(new Option(name, id));
+  if (![...reg.options].some((o) => o.value === settings.msRegion)) reg.add(new Option(settings.msRegion, settings.msRegion));
+  reg.value = settings.msRegion;
+  if (!sel.options.length) {
+    for (const [label, g] of [['女性', 'f'], ['男性', 'm']]) {
+      const group = document.createElement('optgroup');
+      group.label = label;
+      for (const [id, [gender, name]] of Object.entries(MS_VOICES)) if (gender === g) group.append(new Option(name, id));
+      sel.append(group);
+    }
+  }
+  sel.value = settings.msVoice;
+}
+$('#msFallback').addEventListener('change', (e) => { settings.msFallback = e.target.checked; saveSettings(); $('#msBox').hidden = !e.target.checked; renderUsage(); });
+$('#msKey').addEventListener('input', (e) => { settings.msKey = e.target.value.trim(); saveSettings(); $('#msMsg').hidden = true; renderUsage(); });
+$('#msRegion').addEventListener('change', (e) => { settings.msRegion = e.target.value; saveSettings(); $('#msMsg').hidden = true; });
+$('#msVoice').addEventListener('change', (e) => { settings.msVoice = e.target.value; saveSettings(); });
+$('#msPreview').addEventListener('click', async () => {
+  const btn = $('#msPreview'), msg = $('#msMsg');
+  unlock(previewAudio);
+  if (R.wantPlay) togglePlay();
+  btn.disabled = true;
+  btn.textContent = '作成中…';
+  msg.hidden = true;
+  try {
+    const buf = await requestMs(PREVIEW_TEXT, settings.msVoice);
+    addUsage('ms', PREVIEW_TEXT.length);
+    previewAudio.src = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
+    await previewAudio.play();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '試聴';
+  }
+});
+$('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, ms: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
   if (!confirm('保存した音声と履歴をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
   await cacheClear();
@@ -1761,8 +1898,9 @@ function renderUsage() {
   const t = $('#usageText');
   if (!t) return;
   const u = usage(), y = costYen(u);
-  const model = geminiModel(), now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : '';
-  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
+  const model = geminiModel(), now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : !model && msReady() ? '・今はMicrosoftの声' : '';
+  const ms = settings.msKey || u.ms ? `Microsoft 今月${fmtNum(u.ms)}字 / ${fmtNum(MS_FREE)}字（無料）<br>` : '';
+  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${ms}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
   $('#usageMeter').classList.toggle('over', ratio >= 1);
@@ -1869,7 +2007,7 @@ $('#previewBtn').addEventListener('click', async () => {
   btn.textContent = '作成中…';
   $('#setMsg').hidden = true;
   try {
-    const blob = await synth(PREVIEW_TEXT);
+    const blob = await synth(PREVIEW_TEXT, undefined, curProfile(), false);
     previewAudio.src = URL.createObjectURL(blob);
     await previewAudio.play();
   } catch (e) {
@@ -1903,7 +2041,8 @@ async function renderHistory() {
     if (playing) state.append(make('b', null, R.wantPlay ? '再生中' : '開いている'), ' ・ ');
     const job = saver.job?.id === d.id ? saver.job : null, queued = saver.queue.includes(d.id);
     state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ `);
-    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'));
+    const subs = d.keys.filter((k) => keys.has(k) && subKeys.has(k)).length;
+    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), subs ? `（うち${subs}段落はMicrosoftの声）` : '');
     else state.append(job ? `端末に保存しています… ${job.done}/${d.n}段落` : queued ? `保存の順番待ち（${saved}/${d.n}段落）` : `端末に保存 ${saved}/${d.n}段落`);
     const bar = make('span', 'meter');
     const fill = make('span');
@@ -1913,6 +2052,7 @@ async function renderHistory() {
     const actions = make('div', 'hist-actions');
     const acts = [['rename', '名前を変える'], ['delete', '削除']];
     if (saved < d.n) acts.unshift(job || queued ? ['unsave', '保存をやめる'] : ['save', '端末に保存']);
+    else if (subs && d.profile.engine === 'gemini' && geminiModel()) acts.unshift(['remake', 'Geminiの声で作り直す']);
     for (const [act, label] of acts) {
       const b = make('button', 'btn ghost small', label);
       b.type = 'button';
@@ -1933,6 +2073,7 @@ $('#histList').addEventListener('click', async (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'save') { saveDoc(id); return; }
   if (act === 'unsave') { stopSaving(id); return; }
+  if (act === 'remake') { remakeSubs(id); return; }
   if (act === 'rename') {
     const name = prompt('履歴の名前', title)?.trim();
     if (!name) return;
@@ -2052,7 +2193,7 @@ function noteSaved(k) {
   if (!R.chunkKeys.includes(k) || R.saved.has(k)) return;
   R.saved.add(k);
   const items = $('#chunkList').children;
-  R.chunkKeys.forEach((key, i) => { if (key === k) items[i]?.setAttribute('data-saved', ''); });
+  R.chunkKeys.forEach((key, i) => { if (key === k) { items[i]?.setAttribute('data-saved', ''); items[i]?.toggleAttribute('data-sub', subKeys.has(k)); } });
   renderOfflineBar();
 }
 async function refreshSaved() {
@@ -2060,7 +2201,7 @@ async function refreshSaved() {
   if (ck !== R.chunkKeys) return;
   R.saved = new Set(ck.filter((k) => keys.has(k)));
   const items = $('#chunkList').children;
-  ck.forEach((k, i) => items[i]?.toggleAttribute('data-saved', R.saved.has(k)));
+  ck.forEach((k, i) => { items[i]?.toggleAttribute('data-saved', R.saved.has(k)); items[i]?.toggleAttribute('data-sub', R.saved.has(k) && subKeys.has(k)); });
   renderOfflineBar();
 }
 function renderOfflineBar() {
@@ -2069,11 +2210,16 @@ function renderOfflineBar() {
   if (!n) return;
   const s = R.chunkKeys.filter((k) => R.saved.has(k)).length, id = R.doc?.id;
   const busy = id && (saver.job?.id === id || saver.queue.includes(id));
+  const subs = R.chunkKeys.filter((k) => R.saved.has(k) && subKeys.has(k)).length;
+  const remake = s >= n && subs && !busy && R.profile.engine === 'gemini' && !!geminiModel();
   bar.classList.toggle('full', s >= n);
-  btn.hidden = s >= n;
+  btn.hidden = s >= n && !remake;
   btn.disabled = !id;
-  btn.dataset.act = busy ? 'stop' : 'save';
-  if (s >= n) $('#offlineText').innerHTML = '<b>✓ 端末に保存済み</b>（電波なしで聞けます）';
+  btn.dataset.act = busy ? 'stop' : remake ? 'remake' : 'save';
+  if (s >= n) {
+    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${subs ? `（うち${subs}段落はMicrosoftの声）` : '（電波なしで聞けます）'}`;
+    btn.textContent = `Geminiの声で作り直す（${subs}回）`;
+  }
   else if (busy) { $('#offlineText').innerHTML = `端末に保存しています… <b>${s}</b>/${n}段落`; btn.textContent = 'やめる'; }
   else {
     $('#offlineText').innerHTML = `端末に保存 <b>${s}</b>/${n}段落`;
@@ -2083,9 +2229,22 @@ function renderOfflineBar() {
 $('#offlineBtn').addEventListener('click', (e) => {
   const id = R.doc?.id;
   if (!id) return;
-  if (e.currentTarget.dataset.act === 'stop') stopSaving(id);
+  const act = e.currentTarget.dataset.act;
+  if (act === 'stop') stopSaving(id);
+  else if (act === 'remake') remakeSubs(id);
   else saveDoc(id);
 });
+// Microsoftの声で作った段落を消して、Geminiの声で作り直す
+async function remakeSubs(id) {
+  const doc = await docGet(id);
+  const drop = doc ? doc.keys.filter((k) => subKeys.has(k)) : [];
+  if (!drop.length) return;
+  await idb('readwrite', (s) => { for (const k of drop) s.delete(k); return null; });
+  for (const k of drop) subKeys.delete(k);
+  saveSubKeys();
+  await refreshSaved();
+  saveDoc(id);
+}
 
 /* ---------- 目次 ---------- */
 const tocDlg = $('#tocDlg');
