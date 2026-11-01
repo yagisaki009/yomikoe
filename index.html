@@ -960,7 +960,8 @@ const EL_TAGS = {
 const elText = (text, model) => text.replace(TAG_RE, (t) => EL_TAGS[model]?.[t.slice(1, -1)] || '');
 const elVoiceName = () => store.get('elVoices', []).find((v) => v.id === settings.elVoice)?.name || 'ElevenLabs';
 // ElevenLabsは音声を作り終えてから返事をするので、1回が長いと、返事の前にiPhoneの通信が切れる（約1分）。
-// 文の切れ目で600字ほどに分けて2つずつ作り、つないで1つの音声にする（前後の文も渡して、つなぎ目の抑揚をそろえる）
+// 文の切れ目で600字ほどに分けて2つずつ作り、つないで1つの音声にする。
+// ElevenLabsは通信が切れても最後まで作ってクレジットを引くので、やり直しは1回まで。前後の文も、数えられるかもしれないので渡さない
 const EL_PART = 600, EL_PARALLEL = 2;
 function splitForEl(text, max = EL_PART) {
   const units = text.split('\n').flatMap((line, i, all) => splitSentences(i < all.length - 1 ? `${line}\n` : line).flatMap((u) => splitLong(u, max)));
@@ -992,7 +993,7 @@ async function requestEl(text, signal, voice = settings.elVoice, model = setting
   const worker = async () => {
     while (next < parts.length && !ctrl.signal.aborted) {
       const i = next++;
-      pcm[i] = await requestElPart(parts[i], ctrl.signal, voice, model, parts[i - 1], parts[i + 1]);
+      pcm[i] = await requestElPart(parts[i], ctrl.signal, voice, model);
     }
   };
   try {
@@ -1009,10 +1010,8 @@ async function requestEl(text, signal, voice = settings.elVoice, model = setting
   for (const b of pcm) { all.set(b, o); o += b.length; }
   return pcmWav(all);
 }
-async function requestElPart(text, signal, voice, model, prev, next) {
+async function requestElPart(text, signal, voice, model) {
   const body = { text: elText(text, model), model_id: model };
-  // つなぎ目の抑揚をそろえる前後の文（v3は受け付けないので渡さない）
-  if (model !== 'eleven_v3') { if (prev) body.previous_text = elText(prev, model).slice(-300); if (next) body.next_text = elText(next, model).slice(0, 300); }
   for (let attempt = 0; ; attempt++) {
     let res;
     try {
@@ -1024,7 +1023,7 @@ async function requestElPart(text, signal, voice, model, prev, next) {
       });
     } catch (e) {
       if (signal?.aborted) throw e;
-      if (attempt < 2) { await sleep(1500 * 2 ** attempt); continue; }
+      if (attempt < 1) { await sleep(1500); continue; }
       throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
     }
     if (res.ok) {
