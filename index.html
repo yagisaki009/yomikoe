@@ -402,7 +402,7 @@ input, select, textarea {
           <label class="pick">モデル<select id="elModel"></select></label>
           <p id="elCredits" class="usage" hidden></p>
           <p id="elMsg" class="msg" hidden></p>
-          <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
+          <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。キーに「History」の「Read」の許可も付けておくと、通信が切れたときに作り直さず、ElevenLabsの履歴から受け取ります（同じ部分でクレジットを二重に引かれません）。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
         </div>
       </div>
       <div id="msPart" class="sub-part">
@@ -960,8 +960,9 @@ const EL_TAGS = {
 const elText = (text, model) => text.replace(TAG_RE, (t) => EL_TAGS[model]?.[t.slice(1, -1)] || '');
 const elVoiceName = () => store.get('elVoices', []).find((v) => v.id === settings.elVoice)?.name || 'ElevenLabs';
 // ElevenLabsは音声を作り終えてから返事をするので、1回が長いと、返事の前にiPhoneの通信が切れる（約1分）。
-// 文の切れ目で600字ほどに分けて2つずつ作り、つないで1つの音声にする。
-// ElevenLabsは通信が切れても最後まで作ってクレジットを引くので、やり直しは1回まで。前後の文も、数えられるかもしれないので渡さない
+// 文の切れ目で600字ほどに分けて2つずつ作り、つないで1つの音声にする。前後の文も、数えられるかもしれないので渡さない。
+// ElevenLabsは通信が切れても最後まで作ってクレジットを引くので、同じ部分を二度作らない：できた部分はすぐ保存し、
+// 中止しても送った部分は作り終えて取っておき、受け取れなかった部分は送り直さずに履歴（History）から受け取る
 const EL_PART = 600, EL_PARALLEL = 2;
 function splitForEl(text, max = EL_PART) {
   const units = text.split('\n').flatMap((line, i, all) => splitSentences(i < all.length - 1 ? `${line}\n` : line).flatMap((u) => splitLong(u, max)));
@@ -987,51 +988,137 @@ async function requestEl(text, signal, voice = settings.elVoice, model = setting
   if (!settings.elKey) throw new TtsError('nokey', 'ElevenLabsのキーが入っていません。');
   if (!voice) throw new TtsError('auth', 'ElevenLabsの声が選ばれていません。設定で選んでください。');
   const parts = splitForEl(text), pcm = new Array(parts.length);
-  const ctrl = new AbortController(), stop = () => ctrl.abort();
-  signal?.addEventListener('abort', stop);
-  let next = 0;
+  let next = 0, failed = false;
   const worker = async () => {
-    while (next < parts.length && !ctrl.signal.aborted) {
+    while (next < parts.length && !failed && !signal?.aborted) {
       const i = next++;
-      pcm[i] = await requestElPart(parts[i], ctrl.signal, voice, model);
+      try { pcm[i] = await elPart(parts[i], voice, model); } catch (e) { failed = true; throw e; }
     }
   };
-  try {
-    await Promise.all(Array.from({ length: EL_PARALLEL }, worker));
-  } catch (e) {
-    ctrl.abort();
-    throw e;
-  } finally {
-    signal?.removeEventListener('abort', stop);
-  }
-  if (signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+  await untilAbort(Promise.all(Array.from({ length: EL_PARALLEL }, worker)), signal);
+  if (pcm.length !== parts.length || pcm.some((b) => !b)) throw new DOMException('中止しました', 'AbortError');
   const all = new Uint8Array(pcm.reduce((a, b) => a + b.length, 0));
   let o = 0;
   for (const b of pcm) { all.set(b, o); o += b.length; }
+  // つないだ音声は呼んだ側が保存するので、部分は消しておく
+  idb('readwrite', (s) => { for (const t of parts) s.delete(elPartKey(t, voice, model)); return null; });
   return pcmWav(all);
 }
-async function requestElPart(text, signal, voice, model) {
-  const body = { text: elText(text, model), model_id: model };
+// 中止されたら、作っている部分の出来上がりを待たずに抜ける（その部分は出来上がると保存され、次に頼まれたときに使う）
+function untilAbort(p, signal) {
+  p.catch(() => {});
+  if (!signal) return p;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new DOMException('中止しました', 'AbortError'));
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener('abort', abort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+const elPartKey = (text, voice, model) => `elp:${hash(`${voice}|${model}|${text}`)}`;
+// 作っている途中の部分。同じ部分をもう一度頼まれたら、送らずにその出来上がりを待つ
+const elJobs = new Map();
+function elPart(text, voice, model) {
+  const k = elPartKey(text, voice, model);
+  if (!elJobs.has(k)) elJobs.set(k, makeElPart(k, { text: elText(text, model), model_id: model }, voice).finally(() => elJobs.delete(k)));
+  return elJobs.get(k);
+}
+async function keepElPart(k, pcm) {
+  const buf = pcm.slice().buffer;
+  await idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k));
+  markElSent(k, 0);
+  return pcm;
+}
+// 送ったのに、まだ受け取っていない部分（通信が切れた・途中でアプリを閉じた）と、最初に送った時刻。30日より前のものは忘れる
+const elSent = () => store.get('elSent', {});
+function markElSent(k, t) {
+  const m = elSent();
+  if (t) m[k] = m[k] || t; else delete m[k];
+  for (const [x, v] of Object.entries(m)) if (Date.now() - v > 30 * 864e5) delete m[x];
+  store.set('elSent', m);
+}
+const elNetError = () => new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+// 受け取れなかった部分を、ElevenLabsの履歴から探して受け取る（受け取るだけならクレジットは引かれない）。
+// キーに「History」の「Read」の許可があるときだけ使える。null：まだ分からない、false：このキーでは見られない
+let elHistory = null;
+async function elFromHistory(body, voice, since) {
+  if (elHistory === false) return { off: true };
+  try {
+    const q = new URLSearchParams({ voice_id: voice, date_after_unix: String(Math.floor(since / 1000) - 60), sort_direction: 'asc', page_size: '100' });
+    const res = await fetch(`${elBase()}/v1/history?${q}`, { headers: { 'xi-api-key': settings.elKey } });
+    if (res.status === 401 || res.status === 403) { elHistory = false; return { off: true }; }
+    if (!res.ok) return {};
+    elHistory = true;
+    const item = ((await res.json()).history || []).find((h) => (h.text || '').trim() === body.text.trim() && (!h.model_id || h.model_id === body.model_id));
+    if (!item) return {};
+    const a = await fetch(`${elBase()}/v1/history/${encodeURIComponent(item.history_item_id)}/audio`, { headers: { 'xi-api-key': settings.elKey } });
+    if (!a.ok) return {};
+    return { pcm: await toPcm24(await a.arrayBuffer()) };
+  } catch { return { net: true }; }
+}
+// 履歴の音声（MP3など）を、ほかの部分とつなげられるよう24kHz・16bit・1chの音にする
+async function toPcm24(buf) {
+  try {
+    const ch = (await new OfflineAudioContext(1, 1, 24000).decodeAudioData(buf.slice(0))).getChannelData(0);
+    const out = new Int16Array(ch.length);
+    for (let i = 0; i < ch.length; i++) out[i] = Math.max(-1, Math.min(1, ch[i])) * 0x7fff;
+    return new Uint8Array(out.buffer);
+  } catch {
+    const u8 = new Uint8Array(buf);
+    return u8.subarray(0, u8.length & ~1); // 頭の無い音（PCM）のまま返ってきたとき
+  }
+}
+// 返事を受け取れなかったときは、ElevenLabsが作り終わるのを待って、履歴から受け取る
+async function waitElHistory(body, voice, since) {
+  if (elHistory === false) { await sleep(1500); return { off: true }; }
+  let h = {};
+  for (const ms of [5000, 10000, 20000]) {
+    await sleep(ms);
+    h = await elFromHistory(body, voice, since);
+    if (h.pcm || h.net || h.off) break;
+  }
+  return h;
+}
+async function makeElPart(k, body, voice) {
+  const hit = await cacheGet(k);
+  if (hit && hit.buf) return new Uint8Array(hit.buf);
+  // 前に送って受け取れなかった部分は、送り直す前に履歴を見る
+  const sent = elSent()[k];
+  if (sent) {
+    const h = await elFromHistory(body, voice, sent);
+    if (h.pcm) return keepElPart(k, h.pcm);
+    if (h.net) throw elNetError();
+  }
   for (let attempt = 0; ; attempt++) {
-    let res;
+    const t = Date.now();
+    markElSent(k, t);
+    let res, buf;
     try {
       // 音だけ（24kHzのPCM）で受け取り、つないでからWAVにする。保存した後でMP3に圧縮する（書き出しのときにGeminiと混ぜてもつながる）
       res = await fetch(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=pcm_24000`, {
-        method: 'POST', signal,
+        method: 'POST',
         headers: { 'xi-api-key': settings.elKey, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-    } catch (e) {
-      if (signal?.aborted) throw e;
-      if (attempt < 1) { await sleep(1500); continue; }
-      throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+      if (res.ok) buf = new Uint8Array(await res.arrayBuffer());
+    } catch {
+      const h = await waitElHistory(body, voice, t);
+      if (h.pcm) return keepElPart(k, h.pcm);
+      // 履歴に無ければ、ElevenLabsには届いていない。履歴を見られないキーでも、送り直しは1回まで
+      if (!h.net && attempt < 1) continue;
+      throw elNetError();
     }
     if (res.ok) {
-      const buf = new Uint8Array(await res.arrayBuffer());
       if (buf.length < 2) throw new TtsError('bad', 'ElevenLabsから音声が返ってきませんでした。');
       // 念のため、WAVで返ってきたときは音の部分だけを使う
-      return audioType(buf.buffer) === 'audio/wav' ? wavParts(buf).data : buf.subarray(0, buf.length & ~1);
+      return keepElPart(k, audioType(buf.buffer) === 'audio/wav' ? wavParts(buf).data : buf.subarray(0, buf.length & ~1));
     }
+    // 長く待ったあとのエラー（中継のサーバーが待ちきれずに返す504など）は、ElevenLabsが作り終えているかもしれないので、先に履歴を見る
+    if (res.status >= 500 && Date.now() - t > 20000) {
+      const h = await waitElHistory(body, voice, t);
+      if (h.pcm) return keepElPart(k, h.pcm);
+    }
+    markElSent(k, 0); // 断られたときは作られていない
     const raw = await res.text().catch(() => '');
     let code = '', detail = '';
     try { const d = JSON.parse(raw).detail; code = String(d?.status || d?.code || ''); detail = String(d?.message || (typeof d === 'string' ? d : '')); } catch { detail = raw.slice(0, 140); }
@@ -1721,11 +1808,13 @@ function load(i) {
   p.then(() => prefetch(), (e) => { if (i !== R.idx && ctrl === R.ctrl) handleError(e); });
   return p;
 }
+// ElevenLabsの声で作るときは、聞かないかもしれない先の段落にクレジットを使わないよう、次の段落までにする
+const aheadNow = () => (R.profile?.engine === 'gemini' && !geminiModel() && nextSub() === 'el' ? 1 : AHEAD);
 function prefetch() {
   if (!R.ctrl || R.halted) return;
   let busy = 0;
   for (const i of R.loads.keys()) if (!R.urls.has(i)) busy++;
-  for (let i = R.idx; i <= R.idx + AHEAD && i < R.chunks.length && busy < PARALLEL; i++) {
+  for (let i = R.idx, last = R.idx + aheadNow(); i <= last && i < R.chunks.length && busy < PARALLEL; i++) {
     if (!R.loads.has(i)) { load(i); busy++; }
   }
 }
@@ -2112,12 +2201,20 @@ async function loadElVoices() {
 function renderSubOrder() { subOrder().forEach((id, k) => { $(`#${id}Part`).style.order = String(k + 1); }); }
 $('#subFirst').addEventListener('change', (e) => { settings.subFirst = e.target.value; saveSettings(); renderSubOrder(); renderUsage(); });
 $('#elFallback').addEventListener('change', (e) => { settings.elFallback = e.target.checked; saveSettings(); $('#elBox').hidden = !e.target.checked; renderUsage(); });
-$('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; $('#elMsg').hidden = true; renderUsage(); });
+$('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; elHistory = null; $('#elMsg').hidden = true; renderUsage(); });
 $('#elKey').addEventListener('change', () => { loadElVoices(); loadElCredits(); });
 // ElevenLabsの契約の残り（キーに「User」の読み取りの許可があるときだけ読める）
 let elSub = null;
 async function loadElCredits() {
   if (!settings.elKey) { elSub = null; renderElCredits(); return; }
+  // 履歴を読めるキーかどうかも確かめておく（読めないと、通信が切れた部分を受け取れない）
+  if (elHistory === null) {
+    fetch(`${elBase()}/v1/history?page_size=1`, { headers: { 'xi-api-key': settings.elKey } }).then((res) => {
+      if (res.ok) elHistory = true;
+      else if (res.status === 401 || res.status === 403) elHistory = false;
+      renderElCredits();
+    }, () => {});
+  }
   try {
     const res = await fetch(`${elBase()}/v1/user/subscription`, { headers: { 'xi-api-key': settings.elKey } });
     if (res.ok) {
@@ -2136,9 +2233,10 @@ function elCreditsText() {
   return `残り ${fmtNum(elSub.left)} / ${fmtNum(elSub.limit)} クレジット${d ? `（${d.getMonth() + 1}月${d.getDate()}日に戻ります）` : ''}`;
 }
 function renderElCredits() {
-  const el = $('#elCredits'), t = elCreditsText();
-  el.hidden = !t;
-  el.textContent = t;
+  const el = $('#elCredits');
+  const lines = [elCreditsText(), elHistory === false && settings.elKey && '通信が切れたときに作り直さず、ElevenLabsの履歴から受け取れるよう、キーに「History」の「Read」の許可を付けてください'].filter(Boolean);
+  el.hidden = !lines.length;
+  el.innerHTML = lines.map(escXml).join('<br>');
 }
 $('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.value; saveSettings(); });
 $('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); });
