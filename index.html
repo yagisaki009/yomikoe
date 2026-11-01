@@ -1902,6 +1902,7 @@ function openSettings(msg) {
   $('#elKey').value = settings.elKey;
   $('#elBox').hidden = !settings.elFallback;
   $('#elMsg').hidden = true;
+  elLoaded = false; // ElevenLabsで声を作ったり追加したりしたら、次に設定を開いたときに出るように
   loadElVoices();
   $('#readAfterword').checked = settings.readAfterword;
   $('#readAfterword').disabled = !settings.scriptOnly;
@@ -2015,7 +2016,7 @@ async function previewSub(id) {
 $('#msPreview').addEventListener('click', () => previewSub('ms'));
 $('#elPreview').addEventListener('click', () => previewSub('el'));
 
-// ElevenLabsの声は、そのアカウントの一覧（Voices）から選ぶ。日本語の声を上に並べる
+// ElevenLabsの声は、そのアカウントの一覧（Voices）から選ぶ。日本語の声、自分で作った・追加した声、最初から入っている声の順に並べる
 let elLoaded = false;
 function fillEl() {
   const sel = $('#elVoice'), list = store.get('elVoices', []);
@@ -2040,9 +2041,10 @@ async function loadElVoices() {
     const list = ((await res.json()).voices || []).filter((v) => v.voice_id).map((v) => {
       const l = v.labels || {}, ja = /japan|^ja$|日本/i.test([l.language, l.accent, l.description, v.name].join(' '));
       const tags = [GENDER[l.gender] || l.gender, ja && '日本語'].filter(Boolean).join('・');
-      return { id: v.voice_id, name: v.name, ja, label: tags ? `${v.name}（${tags}）` : v.name };
+      const own = !!v.category && v.category !== 'premade';
+      return { id: v.voice_id, name: v.name, ja, own, label: tags ? `${v.name}（${tags}）` : v.name };
     });
-    list.sort((a, b) => b.ja - a.ja);
+    list.sort((a, b) => b.ja - a.ja || b.own - a.own);
     if (!list.length) return;
     elLoaded = true;
     store.set('elVoices', list);
