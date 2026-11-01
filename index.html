@@ -400,6 +400,7 @@ input, select, textarea {
             <button type="button" id="elPreview" class="btn ghost small">試聴</button>
           </div>
           <label class="pick">モデル<select id="elModel"></select></label>
+          <p id="elCredits" class="usage" hidden></p>
           <p id="elMsg" class="msg" hidden></p>
           <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
         </div>
@@ -1026,6 +1027,7 @@ async function makeStandIn(text, signal, key) {
     try {
       const buf = await SUBS[id].make(text, signal);
       tellStandIn(id, why);
+      if (id === 'el') loadElCredits();
       subKeys.set(key, id);
       saveSubKeys();
       cachePut(key, buf);
@@ -1904,6 +1906,8 @@ function openSettings(msg) {
   $('#elMsg').hidden = true;
   elLoaded = false; // ElevenLabsで声を作ったり追加したりしたら、次に設定を開いたときに出るように
   loadElVoices();
+  renderElCredits();
+  loadElCredits();
   $('#readAfterword').checked = settings.readAfterword;
   $('#readAfterword').disabled = !settings.scriptOnly;
   renderEngine();
@@ -2058,7 +2062,33 @@ function renderSubOrder() { subOrder().forEach((id, k) => { $(`#${id}Part`).styl
 $('#subFirst').addEventListener('change', (e) => { settings.subFirst = e.target.value; saveSettings(); renderSubOrder(); renderUsage(); });
 $('#elFallback').addEventListener('change', (e) => { settings.elFallback = e.target.checked; saveSettings(); $('#elBox').hidden = !e.target.checked; renderUsage(); });
 $('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; $('#elMsg').hidden = true; renderUsage(); });
-$('#elKey').addEventListener('change', loadElVoices);
+$('#elKey').addEventListener('change', () => { loadElVoices(); loadElCredits(); });
+// ElevenLabsの契約の残り（キーに「User」の読み取りの許可があるときだけ読める）
+let elSub = null;
+async function loadElCredits() {
+  if (!settings.elKey) { elSub = null; renderElCredits(); return; }
+  try {
+    const res = await fetch(`${elBase()}/v1/user/subscription`, { headers: { 'xi-api-key': settings.elKey } });
+    if (res.ok) {
+      const d = await res.json();
+      elSub = { left: Math.max(0, (d.character_limit || 0) - (d.character_count || 0)), limit: d.character_limit || 0, reset: d.next_character_count_reset_unix || 0 };
+    } else elSub = { error: res.status === 401 ? 'perm' : 'other' };
+  } catch { elSub = null; }
+  renderElCredits();
+  renderUsage();
+}
+function elCreditsText() {
+  if (!elSub) return '';
+  if (elSub.error === 'perm') return '残りのクレジットを出すには、キーに「User」の「Read」の許可を付けてください';
+  if (elSub.error) return '';
+  const d = elSub.reset ? new Date(elSub.reset * 1000) : null;
+  return `残り ${fmtNum(elSub.left)} / ${fmtNum(elSub.limit)} クレジット${d ? `（${d.getMonth() + 1}月${d.getDate()}日に戻ります）` : ''}`;
+}
+function renderElCredits() {
+  const el = $('#elCredits'), t = elCreditsText();
+  el.hidden = !t;
+  el.textContent = t;
+}
 $('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.value; saveSettings(); });
 $('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 }); renderUsage(); });
@@ -2075,7 +2105,8 @@ function renderUsage() {
   const u = usage(), y = costYen(u);
   const model = geminiModel(), sub = !model && nextSub();
   const now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : sub ? `・今は${SUBS[sub].name}の声` : '';
-  const subs = subOrder().filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id]).map((id) => `${SUBS[id].name} ${subUse(id)}<br>`).join('');
+  const subs = subOrder().filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id])
+    .map((id) => `${SUBS[id].name} ${subUse(id)}${id === 'el' && elSub?.limit ? `・${elCreditsText()}` : ''}<br>`).join('');
   t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
