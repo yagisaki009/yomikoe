@@ -244,6 +244,7 @@ input, select, textarea {
 .seg small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
 .msg { margin: 0; font-size: 14px; color: var(--err); }
 .pick { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; font-size: 14px; }
+.sub-part { display: flex; flex-direction: column; gap: 8px; }
 .sub-box { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -380,34 +381,39 @@ input, select, textarea {
       <h3>無料枠を使い切ったとき</h3>
       <label class="check"><input id="geminiFallback" type="checkbox">3.8 Flash Liteの声で続ける</label>
       <p class="hint">Geminiの無料枠は、声のモデルごとに別々に決まっています。いつもの3.8 Flashを使い切ったら、同じ声・同じ「読み方の雰囲気」のまま、軽い3.8 Flash Liteに切り替えて続けます。声の自然さは少し下がります。毎日16〜17時ごろに、3.8 Flashに戻ります。</p>
-      <label class="check"><input id="msFallback" type="checkbox">それも使い切ったら、Microsoftの声で続ける</label>
-      <div id="msBox" class="sub-box">
-        <div class="field-row">
-          <input id="msKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Microsoftのキー（キー1）" aria-label="Microsoftのキー">
-          <button type="button" class="btn ghost small" data-reveal="msKey">表示</button>
+      <label class="pick">先に使う声<select id="subFirst"><option value="ms">Microsoft（無料）</option><option value="el">ElevenLabs</option></select></label>
+      <div id="elPart" class="sub-part">
+        <label class="check"><input id="elFallback" type="checkbox">ElevenLabsの声で続ける</label>
+        <div id="elBox" class="sub-box">
+          <div class="field-row">
+            <input id="elKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ElevenLabsのキー（sk_で始まる）" aria-label="ElevenLabsのキー">
+            <button type="button" class="btn ghost small" data-reveal="elKey">表示</button>
+          </div>
+          <div class="field-row">
+            <select id="elVoice" aria-label="ElevenLabsの声"></select>
+            <button type="button" id="elPreview" class="btn ghost small">試聴</button>
+          </div>
+          <label class="pick">モデル<select id="elModel"></select></label>
+          <p id="elMsg" class="msg" hidden></p>
+          <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
         </div>
-        <label class="pick">地域<select id="msRegion"></select></label>
-        <label class="check"><input id="msCalm" type="checkbox">落ち着いた読み方（少しゆっくり・低め）</label>
-        <div class="field-row">
-          <select id="msVoice" aria-label="Microsoftの声"></select>
-          <button type="button" id="msPreview" class="btn ghost small">試聴</button>
-        </div>
-        <p id="msMsg" class="msg" hidden></p>
-        <p class="hint">Microsoft Azureの「音声サービス」を無料のプラン（Free F0）で作ると、月50万字（1,500字の話で約330話）まで無料です。超えると止まるだけで、料金はかかりません。地域は、キーを作ったときに選んだものにしてください。Microsoftの声で作った段落は、Geminiが戻ったあとに、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。キーはこの端末の中にだけ保存され、Microsoft以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#microsoft" target="_blank" rel="noopener">説明書き</a>にあります。</p>
       </div>
-      <label class="check"><input id="elFallback" type="checkbox">Microsoftも使い切ったら、ElevenLabsの声で続ける</label>
-      <div id="elBox" class="sub-box">
-        <div class="field-row">
-          <input id="elKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ElevenLabsのキー（sk_で始まる）" aria-label="ElevenLabsのキー">
-          <button type="button" class="btn ghost small" data-reveal="elKey">表示</button>
+      <div id="msPart" class="sub-part">
+        <label class="check"><input id="msFallback" type="checkbox">Microsoftの声で続ける</label>
+        <div id="msBox" class="sub-box">
+          <div class="field-row">
+            <input id="msKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Microsoftのキー（キー1）" aria-label="Microsoftのキー">
+            <button type="button" class="btn ghost small" data-reveal="msKey">表示</button>
+          </div>
+          <label class="pick">地域<select id="msRegion"></select></label>
+          <label class="check"><input id="msCalm" type="checkbox">落ち着いた読み方（少しゆっくり・低め）</label>
+          <div class="field-row">
+            <select id="msVoice" aria-label="Microsoftの声"></select>
+            <button type="button" id="msPreview" class="btn ghost small">試聴</button>
+          </div>
+          <p id="msMsg" class="msg" hidden></p>
+          <p class="hint">Microsoft Azureの「音声サービス」を無料のプラン（Free F0）で作ると、月50万字（1,500字の話で約330話）まで無料です。超えると止まるだけで、料金はかかりません。地域は、キーを作ったときに選んだものにしてください。Microsoftの声で作った段落は、Geminiが戻ったあとに、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。キーはこの端末の中にだけ保存され、Microsoft以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#microsoft" target="_blank" rel="noopener">説明書き</a>にあります。</p>
         </div>
-        <div class="field-row">
-          <select id="elVoice" aria-label="ElevenLabsの声"></select>
-          <button type="button" id="elPreview" class="btn ghost small">試聴</button>
-        </div>
-        <label class="pick">モデル<select id="elModel"></select></label>
-        <p id="elMsg" class="msg" hidden></p>
-        <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
       </div>
     </section>
 
@@ -519,7 +525,7 @@ const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
 const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
 const MS_REGIONS = { japaneast: '東日本（Japan East）', japanwest: '西日本（Japan West）', eastasia: '香港（East Asia）', southeastasia: 'シンガポール（Southeast Asia）', koreacentral: '韓国（Korea Central）', eastus: '米国東部（East US）', westus2: '米国西部2（West US 2）', westeurope: '西ヨーロッパ（West Europe）' };
 const MS_FREE = 500000;
-// Microsoftも使い切ったときのElevenLabsの声（無料プランは月1万字ほど、有料プランは契約した分）
+// Geminiを使い切ったときのElevenLabsの声（無料プランは月1万字ほど、有料プランは契約した分）
 const EL_MODELS = { eleven_multilingual_v2: 'Multilingual v2（安定）', eleven_v3: 'v3（表現が豊か）' };
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
@@ -552,7 +558,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -894,7 +900,7 @@ function tellFallback(model) {
   showNotice(`今日の${MODEL_NAME[GEMINI_MODELS[0]]}の無料枠を使い切ったので、${MODEL_NAME[model]}の声で続けます。声の自然さが少し変わります。`);
 }
 
-/* ---------- Geminiを使い切ったときの代わり（Microsoft → ElevenLabs） ---------- */
+/* ---------- Geminiを使い切ったときの代わり（Microsoft・ElevenLabs） ---------- */
 const msVoiceName = () => MS_VOICES[settings.msVoice]?.[1] || settings.msVoice;
 const escXml = (t) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 const MS_TAGS = { pause: '<break time="600ms"/>', 'long-pause': '<break time="1500ms"/>' };
@@ -978,19 +984,19 @@ async function requestEl(text, signal, voice = settings.elVoice, model = setting
   }
 }
 
-// 代わりの声は、Microsoft（月50万字）→ ElevenLabs（月1万字）の順。使えなかったもの（今月の分を使い切った等）は、その日はもう試さない
+// 代わりの声は、設定で選んだほうから先に使う。使えなかったもの（今月の分を使い切った等）は、その日はもう試さない
 const SUBS = {
   el: { name: 'ElevenLabs', free: 0, ready: () => settings.elFallback && !!settings.elKey && !!settings.elVoice, voice: elVoiceName, make: (t, sig) => requestEl(t, sig) },
   ms: { name: 'Microsoft', free: MS_FREE, ready: () => settings.msFallback && !!settings.msKey, voice: msVoiceName, make: (t, sig) => requestMs(t, settings.msVoice, sig) },
 };
-const SUB_ORDER = ['ms', 'el'];
+const subOrder = () => (settings.subFirst === 'el' ? ['el', 'ms'] : ['ms', 'el']);
 function subsOut() { const o = store.get('subOut', null); return o && o.day === geminiDay() ? o.ids : []; }
 function markSubOut(id) { const ids = subsOut(); if (!ids.includes(id)) store.set('subOut', { day: geminiDay(), ids: [...ids, id] }); }
-const nextSub = () => SUB_ORDER.find((id) => SUBS[id].ready() && !subsOut().includes(id));
+const nextSub = () => subOrder().find((id) => SUBS[id].ready() && !subsOut().includes(id));
 // 今月この端末で作った字数（Microsoftは無料の上限も添える。ElevenLabsは契約で上限が違うので添えない）
 const subUse = (id) => `今月${fmtNum(usage()[id])}字${SUBS[id].free ? ` / ${fmtNum(SUBS[id].free)}字まで無料` : ''}`;
 const subNames = (ids) => [...new Set(ids)].map((id) => SUBS[id]?.name || id).join('・');
-const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の${subNames(SUB_ORDER.filter((id) => SUBS[id].ready()))}も、今日はもう使えません。Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
+const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の${subNames(subOrder().filter((id) => SUBS[id].ready()))}も、今日はもう使えません。Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
 // 代わりの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう、どの声で作ったかを覚えておく
 const subKeys = new Map(store.get('subKeys', []).map((x) => (Array.isArray(x) ? x : [x, 'ms'])));
 const saveSubKeys = () => store.set('subKeys', [...subKeys]);
@@ -1040,7 +1046,7 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
     catch (e) {
       if (e.kind !== 'quota' || !standIn) throw e;
       if (nextSub()) return makeStandIn(text, signal, key);
-      throw SUB_ORDER.some((id) => SUBS[id].ready()) ? allOutError() : e;
+      throw subOrder().some((id) => SUBS[id].ready()) ? allOutError() : e;
     }
   })();
   making.set(key, job);
@@ -1784,8 +1790,8 @@ function handleError(e) {
     showNotice(e.message, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'quota' && !settings.geminiFallback) {
     showNotice(e.message, `${MODEL_NAME[GEMINI_MODELS[1]]}で続ける`, () => { settings.geminiFallback = true; saveSettings(); hideNotice(); resume(); });
-  } else if (e.kind === 'quota' && !SUB_ORDER.some((id) => SUBS[id].ready())) {
-    showNotice(`${e.message}設定でMicrosoftかElevenLabsのキーを入れると、続きも無料で読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
+  } else if (e.kind === 'quota' && !subOrder().some((id) => SUBS[id].ready())) {
+    showNotice(`${e.message}設定でElevenLabsかMicrosoftのキーを入れると、続きも無料で読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'budget') {
     showNotice(`${e.message}上限は設定で変えられます。`, '今回は続ける', () => { overBudgetOk = true; hideNotice(); resume(); });
   } else {
@@ -1880,6 +1886,8 @@ function openSettings(msg) {
   $('#msBox').hidden = !settings.msFallback;
   $('#msMsg').hidden = true;
   fillMs();
+  $('#subFirst').value = settings.subFirst;
+  renderSubOrder();
   $('#elFallback').checked = settings.elFallback;
   $('#elKey').value = settings.elKey;
   $('#elBox').hidden = !settings.elFallback;
@@ -2032,6 +2040,9 @@ async function loadElVoices() {
     renderUsage();
   } catch {}
 }
+// 設定画面でも、先に使う声の欄を上に並べる
+function renderSubOrder() { subOrder().forEach((id, k) => { $(`#${id}Part`).style.order = String(k + 1); }); }
+$('#subFirst').addEventListener('change', (e) => { settings.subFirst = e.target.value; saveSettings(); renderSubOrder(); renderUsage(); });
 $('#elFallback').addEventListener('change', (e) => { settings.elFallback = e.target.checked; saveSettings(); $('#elBox').hidden = !e.target.checked; renderUsage(); });
 $('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; $('#elMsg').hidden = true; renderUsage(); });
 $('#elKey').addEventListener('change', loadElVoices);
@@ -2051,7 +2062,7 @@ function renderUsage() {
   const u = usage(), y = costYen(u);
   const model = geminiModel(), sub = !model && nextSub();
   const now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : sub ? `・今は${SUBS[sub].name}の声` : '';
-  const subs = SUB_ORDER.filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id]).map((id) => `${SUBS[id].name} ${subUse(id)}<br>`).join('');
+  const subs = subOrder().filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id]).map((id) => `${SUBS[id].name} ${subUse(id)}<br>`).join('');
   t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
