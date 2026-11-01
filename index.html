@@ -387,6 +387,7 @@ input, select, textarea {
           <button type="button" class="btn ghost small" data-reveal="msKey">表示</button>
         </div>
         <label class="pick">地域<select id="msRegion"></select></label>
+        <label class="check"><input id="msCalm" type="checkbox">落ち着いた読み方（少しゆっくり・低め）</label>
         <div class="field-row">
           <select id="msVoice" aria-label="Microsoftの声"></select>
           <button type="button" id="msPreview" class="btn ghost small">試聴</button>
@@ -514,7 +515,8 @@ const GEMINI_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
 const MODEL_NAME = { 'gemini-3.8-flash-tts': '3.8 Flash', 'gemini-3.8-flash-lite-tts': '3.8 Flash Lite' };
 const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
 // Geminiを全部使い切ったときの代わり：Microsoft（Azure）の声。無料のプラン（F0）なら月50万字まで無料で、超えると止まるだけ
-const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
+// HDの声は、文の気持ちを読み取って抑揚を付ける新しい声（ふつうの声より自然）
+const MS_VOICES = { 'ja-JP-Nanami:DragonHDLatestNeural': ['f', 'ナナミ HD（より自然）'], 'ja-JP-Masaru:DragonHDLatestNeural': ['m', 'マサル HD（より自然）'], 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
 const MS_REGIONS = { japaneast: '東日本（Japan East）', japanwest: '西日本（Japan West）', eastasia: '香港（East Asia）', southeastasia: 'シンガポール（Southeast Asia）', koreacentral: '韓国（Korea Central）', eastus: '米国東部（East US）', westus2: '米国西部2（West US 2）', westeurope: '西ヨーロッパ（West Europe）' };
 const MS_FREE = 500000;
 // Microsoftも使い切ったときのElevenLabsの声。無料プランは月1万字ほどと少ない
@@ -551,7 +553,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', msFallback: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -900,6 +902,8 @@ function msSsml(text, voice) {
   let body = '', last = 0;
   for (const m of text.matchAll(TAG_RE)) { body += escXml(text.slice(last, m.index)) + (MS_TAGS[m[0].slice(1, -1)] || ''); last = m.index + m[0].length; }
   body = (body + escXml(text.slice(last))).replace(/\n+/g, '<break time="400ms"/>');
+  // 落ち着いた読み方：少しゆっくり、少し低く（HDの声は自分で抑揚を決めるので、そのまま）
+  if (settings.msCalm && !voice.includes('DragonHD')) body = `<prosody rate="-10%" pitch="-6%">${body}</prosody>`;
   return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ja-JP"><voice name="${voice}">${body}</voice></speak>`;
 }
 async function requestMs(text, voice, signal) {
@@ -1869,6 +1873,7 @@ function openSettings(msg) {
   $('#geminiFallback').checked = settings.geminiFallback;
   $('#msFallback').checked = settings.msFallback;
   $('#msKey').value = settings.msKey;
+  $('#msCalm').checked = settings.msCalm;
   $('#msBox').hidden = !settings.msFallback;
   $('#msMsg').hidden = true;
   fillMs();
@@ -1963,6 +1968,7 @@ $('#msFallback').addEventListener('change', (e) => { settings.msFallback = e.tar
 $('#msKey').addEventListener('input', (e) => { settings.msKey = e.target.value.trim(); saveSettings(); $('#msMsg').hidden = true; renderUsage(); });
 $('#msRegion').addEventListener('change', (e) => { settings.msRegion = e.target.value; saveSettings(); $('#msMsg').hidden = true; });
 $('#msVoice').addEventListener('change', (e) => { settings.msVoice = e.target.value; saveSettings(); });
+$('#msCalm').addEventListener('change', (e) => { settings.msCalm = e.target.checked; saveSettings(); });
 // 代わりの声の試聴（Geminiの回数は使わない）
 async function previewSub(id) {
   const btn = $(`#${id}Preview`), msg = $(`#${id}Msg`);
