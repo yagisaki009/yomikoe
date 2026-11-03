@@ -135,6 +135,17 @@ body.has-player main { padding-bottom: 190px; }
 .hist-open .meter { margin-top: 8px; height: 4px; }
 .hist-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
 
+/* 作る順番待ち */
+.queue { margin-top: 20px; }
+.queue-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.queue-list li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+.queue-list li.now { border-color: var(--accent); }
+.q-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.q-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.queue-paused { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.queue-paused .msg { flex: 1; }
+
 /* 目次 */
 .toc { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .toc li + li { border-top: 1px solid var(--line); }
@@ -294,7 +305,17 @@ input, select, textarea {
       <button type="button" id="pasteBtn" class="btn ghost">貼り付け</button>
       <button type="button" id="clearBtn" class="btn ghost">消去</button>
       <button type="button" id="resumeBtn" class="btn ghost" hidden>続きから</button>
+      <button type="button" id="queueBtn" class="btn ghost">順番待ちに入れる</button>
       <button type="button" id="startBtn" class="btn primary">読み上げる</button>
+    </div>
+    <div id="queueBox" class="queue" hidden>
+      <p class="label">作る順番待ち</p>
+      <div id="queuePaused" class="queue-paused" hidden>
+        <p id="queueMsg" class="msg"></p>
+        <button type="button" id="queueResume" class="btn ghost small">続ける</button>
+      </div>
+      <ol id="queueList" class="queue-list"></ol>
+      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。できた話は履歴から聞けます。</p>
     </div>
   </section>
 
@@ -1502,7 +1523,7 @@ async function renderEstimate() {
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
   const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
-    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && nextSub() ? `${SUBS[nextSub()].name}の声で作る分 約<b>${fmtNum(fresh)}</b>字（無料）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
+    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && nextSub() ? `${SUBS[nextSub()].name}の声で作る分 約<b>${fmtNum(fresh)}</b>字（${SUBS[nextSub()].free ? '無料' : 'クレジットを使います'}）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
   $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
@@ -1739,6 +1760,11 @@ function updateMedia() {
   } catch {}
 }
 
+// 台本は、いちばん上の行（アルバム名や作品名）を名前にする
+function titleOf(text, filter, chunks) {
+  const firstLine = filter ? cleanTitle(text.split('\n').find((l) => SPEAKABLE.test(l)) || '') : '';
+  return (firstLine || chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
+}
 function startReading(text, from = 0, offset = 0, doc = null) {
   stopAll();
   unlock(audio);
@@ -1765,9 +1791,7 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   R.ctrl = new AbortController();
   R.textHash = hash(text);
   R.sig = sessionSig(text, R.dict, R.filter);
-  // 台本は、いちばん上の行（アルバム名や作品名）を名前にする
-  const firstLine = R.filter ? cleanTitle(text.split('\n').find((l) => SPEAKABLE.test(l)) || '') : '';
-  R.title = doc?.title || (firstLine || R.chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
+  R.title = doc?.title || titleOf(text, R.filter, R.chunks);
   R.finished = false;
   $('#docTitle').textContent = R.title;
   renderChunks();
@@ -2427,7 +2451,7 @@ $('#histList').addEventListener('click', async (e) => {
   if (!li) return;
   const id = li.dataset.id, title = li.querySelector('.hist-title').textContent;
   const act = e.target.closest('[data-act]')?.dataset.act;
-  if (act === 'save') { saveDoc(id); return; }
+  if (act === 'save') { saveDoc(id, title); return; }
   if (act === 'unsave') { stopSaving(id); return; }
   if (act === 'remake') { remakeSubs(id); return; }
   if (act === 'rename') {
@@ -2483,67 +2507,158 @@ $('#histList').addEventListener('click', async (e) => {
 });
 
 /* ---------- 端末に保存（電波がなくても聞けるように） ---------- */
-// 保存を頼まれた履歴は、1件ずつ順番に、まだ作っていない段落を作る
-const saver = { queue: [], job: null };
+// 保存を頼まれた履歴は、1件ずつ順番に、まだ作っていない段落を作る。待ちの列はアプリを閉じても覚えておき、次に開いたときに続ける
+// paused：作れなかった理由（その話を先頭に残して、列を止めている）
+const saver = { queue: [], job: null, paused: '', names: new Map() };
+const saveQueue = () => store.set('saveQueue', [saver.job?.id, ...saver.queue].filter(Boolean));
+// 止まったことも覚えておき、同じ日にアプリを開き直したときは、「続ける」を押すまで待つ
+function setPaused(msg) {
+  saver.paused = msg;
+  store.set('savePaused', msg ? { day: geminiDay(), msg } : null);
+}
 function docChunks(doc, text) {
   const p = doc.profile;
   return chunkText(readableOf(text, doc.filter || null), { engine: p.chunkBy || p.engine, dict: doc.dict, chunk: p.chunk || 1 });
 }
-function saveDoc(id) {
-  if (saver.job?.id === id || saver.queue.includes(id)) return;
-  saver.queue.push(id);
+function saveDoc(id, title) {
+  if (title) saver.names.set(id, title);
+  if (saver.job?.id !== id && !saver.queue.includes(id)) saver.queue.push(id);
+  saveQueue();
   navigator.storage?.persist?.().catch(() => {});
+  resumeSaver();
+}
+// 止まっている列も、もう一度動かす
+function resumeSaver() {
+  setPaused('');
   renderSaving();
   if (!saver.job) runSaver();
 }
 function stopSaving(id) {
   saver.queue = saver.queue.filter((q) => q !== id);
+  if (!saver.queue.length) setPaused('');
   if (saver.job?.id === id) saver.job.ctrl.abort();
+  saveQueue();
   renderSaving();
 }
+// 聞いている話の段落や書き出しを先に作れるよう、それらが作っているあいだは1つずつ作る
+const othersBusy = () => [...R.loads.keys()].some((i) => !R.urls.has(i)) || !!(exp && !exp.url);
+let saverRunning = false;
 async function runSaver() {
-  while (saver.queue.length) {
+  if (saverRunning) return;
+  saverRunning = true;
+  try { await saverLoop(); } finally { saverRunning = false; }
+}
+async function saverLoop() {
+  while (saver.queue.length && !saver.paused) {
     const id = saver.queue[0];
     const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
     const have = await cacheKeys();
-    if (saver.queue[0] !== id) continue;
+    if (saver.queue[0] !== id || saver.paused) continue;
     saver.queue.shift();
-    if (!doc || typeof text !== 'string') continue;
+    if (!doc || typeof text !== 'string') { saveQueue(); continue; }
     const todo = docChunks(doc, text).filter((c) => !have.has(keyFor(c.speech, doc.profile)));
     const job = saver.job = { id, title: doc.title, n: doc.n, done: doc.n - todo.length, ctrl: new AbortController() };
+    saver.names.set(id, doc.title);
+    saveQueue();
     renderSaving();
     let next = 0;
-    const worker = async () => {
+    const worker = async (w) => {
       while (next < todo.length && !job.ctrl.signal.aborted) {
+        if (w > 0 && othersBusy()) { await sleep(1000); continue; }
         await synth(todo[next++].speech, job.ctrl.signal, doc.profile);
         job.done++;
         renderSaving();
       }
     };
     try {
-      await Promise.all(Array.from({ length: PARALLEL }, worker));
+      await Promise.all(Array.from({ length: PARALLEL }, (_, w) => worker(w)));
     } catch (e) {
       job.ctrl.abort();
       if (e.name !== 'AbortError') {
-        saver.queue = [];
+        // この話を先頭に戻して、列を止める（無料枠を使い切ったなど、あとの話も同じ理由で作れないことが多いので）
+        saver.queue.unshift(id);
         saver.job = null;
+        setPaused(e.message);
+        saveQueue();
         renderSaving();
-        showNotice(`「${job.title}」の保存が止まりました。${e.message}ここまでの段落は保存済みです。もう一度「端末に保存」を押すと、残りだけを作ります。`,
-          e.kind === 'nokey' || e.kind === 'auth' ? '設定を開く' : '', () => { hideNotice(); openSettings(); });
+        const rest = saver.queue.length - 1;
+        showNotice(`「${job.title}」の保存が止まりました。${e.message}ここまでの段落は保存済みです。${rest ? `順番待ちの${rest}話も止めています。` : ''}「続ける」を押すと、残りだけを作ります。`,
+          ...(e.kind === 'nokey' || e.kind === 'auth' ? ['設定を開く', () => { hideNotice(); openSettings(); }] : ['続ける', () => { hideNotice(); resumeSaver(); }]));
         return;
       }
     }
     saver.job = null;
-    if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。電波がなくても聞けます。`);
+    saveQueue();
+    if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。電波がなくても聞けます。`, '履歴を開く', () => { hideNotice(); showView('history'); });
   }
   renderSaving();
 }
 let histTimer = 0;
 function renderSaving() {
   renderOfflineBar();
+  renderQueue();
   // 履歴の一覧は、開いているときだけ、まとめて描き直す
   if (!$('#historyView').hidden && !histTimer) histTimer = setTimeout(() => { histTimer = 0; renderHistory(); }, 400);
 }
+// 入力画面の「作る順番待ち」。いま作っている話を先頭に並べる
+let queueToken = 0;
+async function renderQueue() {
+  const token = ++queueToken, ids = [saver.job?.id, ...saver.queue].filter(Boolean);
+  for (const id of ids) if (!saver.names.has(id)) saver.names.set(id, (await docGet(id))?.title || '（無題）');
+  if (token !== queueToken) return;
+  $('#queueBox').hidden = !ids.length;
+  $('#queuePaused').hidden = !saver.paused;
+  $('#queueMsg').textContent = saver.paused ? `止まっています。${saver.paused}` : '';
+  const list = $('#queueList');
+  list.textContent = '';
+  for (const id of ids) {
+    const job = saver.job?.id === id ? saver.job : null, q = saver.queue.indexOf(id);
+    const li = make('li', job ? 'now' : '');
+    const body = make('div', 'q-body');
+    const meta = job ? `作っています… ${job.done}/${job.n}段落` : saver.paused && q === 0 ? '止まっています' : `順番待ち・${q + 1}番目`;
+    body.append(make('span', 'q-title', saver.names.get(id)), make('span', 'q-meta', meta));
+    const b = make('button', 'btn ghost small', 'やめる');
+    b.type = 'button';
+    b.dataset.id = id;
+    li.append(body, b);
+    list.append(li);
+  }
+}
+$('#queueList').addEventListener('click', (e) => { const id = e.target.closest('[data-id]')?.dataset.id; if (id) stopSaving(id); });
+$('#queueResume').addEventListener('click', resumeSaver);
+// 貼り付けた話を、聞いている話や書き出しはそのままで履歴に入れ、待ちの列の最後に足す
+async function queueText(text) {
+  let doc = await findDoc(text);
+  if (!doc) {
+    const profile = curProfile(), dict = settings.dict, filter = readFilterFor(text);
+    const chunks = chunkText(readableOf(text, filter), { engine: profile.engine, dict, chunk: profile.chunk });
+    if (!chunks.length) return null;
+    const now = Date.now();
+    doc = {
+      id: docIdOf(text, profile, dict, filter), title: titleOf(text, filter, chunks), profile, dict, filter, chars: chunks.reduce((a, c) => a + c.chars, 0), n: chunks.length,
+      keys: chunks.map((c) => keyFor(c.speech, profile)), createdAt: now, updatedAt: now, pos: { i: 0, t: 0, done: false },
+    };
+    await docPut(doc);
+    await idbStore('texts', 'readwrite', (s) => s.put(text, doc.id));
+  }
+  const have = await cacheKeys();
+  if (doc.keys.every((k) => have.has(k))) return { doc, saved: true };
+  const ids = [saver.job?.id, ...saver.queue].filter(Boolean), at = ids.indexOf(doc.id);
+  saveDoc(doc.id, doc.title);
+  return { doc, ahead: at < 0 ? ids.length : at };
+}
+$('#queueBtn').addEventListener('click', async () => {
+  const text = textEl.value;
+  if (!text.trim()) { showNotice('順番待ちに入れる文章を貼り付けてください。'); return; }
+  if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  const r = await queueText(text);
+  if (!r) { showNotice('読み上げる文章がありません。'); return; }
+  // 次の話をすぐ貼り付けられるよう、欄を空にする（文章は履歴に残っている）
+  textEl.value = '';
+  textEl.dispatchEvent(new Event('input'));
+  showNotice(r.saved ? `「${r.doc.title}」は、もう端末に保存してあります。履歴から聞けます。`
+    : !r.ahead ? `「${r.doc.title}」を作り始めました。できたら履歴から聞けます。` : `「${r.doc.title}」を順番待ちに入れました。前の${r.ahead}話ができたら、続けて作ります。`);
+});
 // 読み上げ画面：段落ごとの印と、全体の保存の様子
 function noteSaved(k) {
   if (!R.chunkKeys.includes(k) || R.saved.has(k)) return;
@@ -2800,6 +2915,14 @@ $('#expClose').addEventListener('click', () => { expDlg.close(); exportClosed();
 expDlg.addEventListener('close', exportClosed);
 
 /* ---------- 起動 ---------- */
+// 前に開いていたときの待ちの列を、続きから作る
+saver.queue = store.get('saveQueue', []);
+if (saver.queue.length) {
+  const paused = store.get('savePaused', null);
+  if (paused?.day === geminiDay()) saver.paused = paused.msg;
+  renderQueue();
+  if (!saver.paused) setTimeout(runSaver, 1500);
+}
 renderEngine();
 renderLimit();
 scheduleEstimate();
