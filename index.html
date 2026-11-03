@@ -341,7 +341,7 @@ input, select, textarea {
       <h1>履歴</h1>
       <span aria-hidden="true"></span>
     </div>
-    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても回数や料金はかかりません。「端末に保存」を押すと、残りの段落もまとめて作り、電波がなくても最後まで聞けるようになります。すべて保存した履歴（✓ 端末に保存済み）は消しません。途中までの履歴は、保存が<span class="cache-limit">3GB</span>を超えると古い音声から消えます（上限は設定で変えられます）。</p>
+    <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても回数や料金はかかりません。「端末に保存」を押すと、残りの段落もまとめて作って、この端末に保存します。すべて保存した履歴（✓ 端末に保存済み）は消しません。途中までの履歴は、保存が<span class="cache-limit">3GB</span>を超えると古い音声から消えます（上限は設定で変えられます）。</p>
     <p id="histEmpty" class="hist-empty" hidden>まだ履歴はありません。<br>文章を読み上げると、ここに残ります。</p>
     <ul id="histList" class="hist"></ul>
   </section>
@@ -957,7 +957,7 @@ async function requestMs(text, voice, signal) {
     } catch (e) {
       if (signal?.aborted) throw e;
       if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
-      throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+      throw new TtsError('net', '通信できませんでした。インターネットにつながっているか確かめてください。');
     }
     if (res.ok) {
       const buf = await res.arrayBuffer();
@@ -1058,7 +1058,7 @@ function markElSent(k, t) {
   for (const [x, v] of Object.entries(m)) if (Date.now() - v > 30 * 864e5) delete m[x];
   store.set('elSent', m);
 }
-const elNetError = () => new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+const elNetError = () => new TtsError('net', '通信できませんでした。インターネットにつながっているか確かめてください。');
 // 受け取れなかった部分を、ElevenLabsの履歴から探して受け取る（受け取るだけならクレジットは引かれない）。
 // キーに「History」の「Read」の許可があるときだけ使える。null：まだ分からない、false：このキーでは見られない
 let elHistory = null;
@@ -1238,7 +1238,7 @@ async function makeSpeech(text, signal, p, key) {
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
-        throw new TtsError('net', '通信できませんでした。電波の状態を確かめてください。');
+        throw new TtsError('net', '通信できませんでした。インターネットにつながっているか確かめてください。');
       }
       if (res.ok) {
         let buf;
@@ -2589,7 +2589,7 @@ async function saverLoop() {
     }
     saver.job = null;
     saveQueue();
-    if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。電波がなくても聞けます。`, '履歴を開く', () => { hideNotice(); showView('history'); });
+    if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。`, '履歴を開く', () => { hideNotice(); showView('history'); });
   }
   renderSaving();
 }
@@ -2688,7 +2688,7 @@ function renderOfflineBar() {
   btn.disabled = !id;
   btn.dataset.act = busy ? 'stop' : remake ? 'remake' : 'save';
   if (s >= n) {
-    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : '（電波なしで聞けます）'}`;
+    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : ''}`;
     btn.textContent = `Geminiの声で作り直す（${subs}回）`;
   }
   else if (busy) { $('#offlineText').innerHTML = `端末に保存しています… <b>${s}</b>/${n}段落`; btn.textContent = 'やめる'; }
@@ -2873,7 +2873,7 @@ async function runExport() {
   if (exp !== job) return;
   const wav = audioType(parts[0].buffer) === 'audio/wav';
   if (parts.some((p) => (audioType(p.buffer) === 'audio/wav') !== wav)) {
-    exportFailed('音声をまとめる準備ができませんでした。電波のあるところで、もう一度「書き出す」を押してください。');
+    exportFailed('音声をまとめる準備ができませんでした。インターネットにつながるところで、もう一度「書き出す」を押してください。');
     return;
   }
   let file;
