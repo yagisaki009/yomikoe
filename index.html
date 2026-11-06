@@ -162,7 +162,7 @@ body.has-player main { padding-bottom: 190px; }
 /* 押したときに題名の文字が選ばれないようにする */
 .toc button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .toc .copy { margin: 0 4px 0 6px; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
-.toc .copy.ok { color: var(--accent); border-color: var(--accent); font-weight: 700; }
+.btn.ok { color: var(--accent); border-color: var(--accent); font-weight: 700; }
 
 /* プレーヤー */
 .player {
@@ -316,6 +316,7 @@ input, select, textarea {
     <p id="estimate" class="estimate"></p>
     <div class="actions">
       <button type="button" id="pasteBtn" class="btn ghost">貼り付け</button>
+      <button type="button" id="copyBtn" class="btn ghost">コピー</button>
       <button type="button" id="clearBtn" class="btn ghost">消去</button>
       <button type="button" id="resumeBtn" class="btn ghost" hidden>続きから</button>
       <button type="button" id="queueBtn" class="btn ghost">順番待ちに入れる</button>
@@ -1615,6 +1616,7 @@ if (navigator.clipboard?.readText) {
 } else {
   $('#pasteBtn').hidden = true;
 }
+$('#copyBtn').addEventListener('click', (e) => copyRaw(e.currentTarget, textEl.value));
 $('#clearBtn').addEventListener('click', () => {
   if (!textEl.value || confirm('文章を消しますか？')) { textEl.value = ''; textEl.dispatchEvent(new Event('input')); textEl.focus(); }
 });
@@ -2588,6 +2590,7 @@ const fmtDate = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}月
 const voiceLabel = (p) => (p.engine === 'gemini' ? `Gemini・${p.voice}` : `Grok・${capitalize(p.voice)}`);
 function make(tag, cls, text) { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; }
 
+const rawCache = new Map();
 async function renderHistory() {
   const [docs, keys] = await Promise.all([docAll(), cacheKeys()]);
   const list = $('#histList');
@@ -2616,7 +2619,7 @@ async function renderHistory() {
     bar.append(fill);
     open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}${d.filter ? ' ・ 題名と本文のみ' : ''}`), state, bar);
     const actions = make('div', 'hist-actions');
-    const acts = [['rename', '名前を変える'], ['delete', '削除']];
+    const acts = [['copy', '原文をコピー'], ['rename', '名前を変える'], ['delete', '削除']];
     if (!playing) acts.unshift(nextAt >= 0 ? ['unnext', '次に聞くのをやめる'] : ['next', '次に聞く']);
     if (saved < d.n) acts.unshift(job || queued ? ['unsave', '保存をやめる'] : ['save', '端末に保存']);
     else if (subs && d.profile.engine === 'gemini' && geminiModel()) acts.unshift(['remake', 'Geminiの声で作り直す']);
@@ -2629,6 +2632,8 @@ async function renderHistory() {
     li.append(open, actions);
     list.append(li);
   }
+  // 「原文をコピー」をすぐコピーできるよう、文章を先に読んでおく
+  for (const d of docs) if (!rawCache.has(d.id)) textGet(d.id).then((t) => { if (typeof t === 'string') rawCache.set(d.id, t); }, () => {});
 }
 
 $('#openHistory').addEventListener('click', () => showView('history'));
@@ -2638,6 +2643,11 @@ $('#histList').addEventListener('click', async (e) => {
   if (!li) return;
   const id = li.dataset.id, title = li.querySelector('.hist-title').textContent;
   const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'copy') {
+    const t = rawCache.get(id) ?? (R.doc?.id === id ? R.text : null);
+    copyRaw(e.target.closest('[data-act]'), t ?? textGet(id).then((x) => (typeof x === 'string' ? x : '')));
+    return;
+  }
   if (act === 'save') { saveDoc(id, title); return; }
   if (act === 'unsave') { stopSaving(id); return; }
   if (act === 'remake') { remakeSubs(id); return; }
@@ -2677,6 +2687,7 @@ $('#histList').addEventListener('click', async (e) => {
     await idb('readwrite', (s) => { for (const k of doc.keys) if (!keep.has(k)) s.delete(k); return null; });
     await idbStore('docs', 'readwrite', (s) => s.delete(id));
     await idbStore('texts', 'readwrite', (s) => s.delete(id));
+    rawCache.delete(id);
     renderHistory();
     return;
   }
@@ -2960,33 +2971,46 @@ function episodeRaw(k) {
   if (!ep || ep.rawStart == null) return '';
   return R.text.replace(/\r\n?/g, '\n').split('\n').slice(ep.rawStart, ep.rawEnd).join('\n').replace(/^(\s*\n)+/, '').trimEnd();
 }
-// 古い書き方のコピー（navigator.clipboard が使えないとき）
-function copyByTextarea(text) {
+function copyEpisode(btn) { copyRaw(btn, episodeRaw(+btn.dataset.copy)); }
+
+/* ---------- 原文のコピー（目次・履歴・編集画面） ---------- */
+// 古い書き方のコピー（navigator.clipboard が使えないとき）。開いている画面（ダイアログ）の中に置かないと選べない
+function copyByTextarea(text, near) {
   const ta = make('textarea');
   ta.value = text;
   ta.readOnly = true;
   ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
-  tocDlg.append(ta);
-  ta.focus();
+  (near?.closest('dialog') || document.body).append(ta);
+  ta.focus({ preventScroll: true });
   ta.setSelectionRange(0, text.length);
   let ok = false;
   try { ok = document.execCommand('copy'); } catch {}
   ta.remove();
   return ok;
 }
-function copyEpisode(btn) {
-  const text = episodeRaw(+btn.dataset.copy);
-  if (!text) return;
+// src は文章そのもの、または文章をあとで返す Promise。
+// iPhoneは押した瞬間にコピーを始めないと許さないので、文章がまだ手元にないときは、中身をあとから渡す書き方でコピーする
+function copyRaw(btn, src) {
+  btn.dataset.label ||= btn.textContent;
   const show = (label, ok) => {
     clearTimeout(btn.timer);
     btn.textContent = label;
     btn.classList.toggle('ok', ok);
-    btn.timer = setTimeout(() => { btn.textContent = '原文をコピー'; btn.classList.remove('ok'); }, 2500);
+    btn.timer = setTimeout(() => { btn.textContent = btn.dataset.label; btn.classList.remove('ok'); }, 2500);
   };
   const done = () => show('✓ コピーしました', true);
-  const fallback = () => (copyByTextarea(text) ? done() : show('コピーできません', false));
-  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, fallback);
-  else fallback();
+  const fail = () => show('コピーできません', false);
+  const plain = (t) => {
+    if (!t) { show('文章がありません', false); return; }
+    const fallback = () => (copyByTextarea(t, btn) ? done() : fail());
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(t).then(done, fallback);
+    else fallback();
+  };
+  if (typeof src !== 'object' || !src?.then) { plain(src); return; }
+  if (window.ClipboardItem && navigator.clipboard?.write) {
+    const blob = src.then((t) => { if (!t) throw new Error('empty'); return new Blob([t], { type: 'text/plain' }); });
+    navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]).then(done, () => src.then(plain, fail));
+  } else src.then(plain, fail);
 }
 
 /* ---------- 書き出し ---------- */
