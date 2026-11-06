@@ -119,6 +119,8 @@ body.has-player main { padding-bottom: 190px; }
 .offline b { color: var(--ink); }
 .offline.full { padding-block: 10px; border-color: transparent; background: var(--ok-bg); color: var(--ok); }
 .offline.full b { color: var(--ok); }
+.upnext { margin: 0 0 8px; padding: 0 4px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.upnext b { color: var(--ink); font-weight: 700; }
 .hist-meta b.ok { color: var(--ok); }
 @keyframes breathe { 50% { background-color: transparent; } }
 
@@ -133,7 +135,7 @@ body.has-player main { padding-bottom: 190px; }
 .hist-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .hist-meta b { color: var(--accent); font-weight: 700; }
 .hist-open .meter { margin-top: 8px; height: 4px; }
-.hist-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
+.hist-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
 
 /* 作る順番待ち */
 .queue { margin-top: 20px; }
@@ -186,7 +188,13 @@ body.has-player main { padding-bottom: 190px; }
 .vol svg { width: 20px; height: 20px; }
 .vol input { width: 92px; padding: 0; border: 0; background: transparent; accent-color: var(--accent); cursor: pointer; }
 @media (max-width: 480px) { .vol input { width: 64px; } }
-.rate { flex: none; border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 3px 10px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rate { flex: none; box-sizing: border-box; height: 29px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 0 10px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* おやすみタイマー：見た目はボタン、押すとiPhoneの選ぶ画面が出る */
+.sleep { position: relative; display: inline-flex; align-items: center; gap: 4px; line-height: normal; color: var(--muted); }
+.sleep svg { width: 14px; height: 14px; fill: currentColor; }
+.sleep.on { color: var(--accent); border-color: var(--accent); }
+#sleepText:empty { display: none; }
+.sleep select { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; font-size: 16px; cursor: pointer; }
 .controls { display: flex; align-items: center; justify-content: center; gap: clamp(8px, 4vw, 26px); margin-top: 4px; }
 .controls button { width: 48px; height: 48px; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; position: relative; }
 .controls svg { width: 26px; height: 26px; fill: currentColor; }
@@ -315,7 +323,7 @@ input, select, textarea {
         <button type="button" id="queueResume" class="btn ghost small">続ける</button>
       </div>
       <ol id="queueList" class="queue-list"></ol>
-      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。できた話は履歴から聞けます。</p>
+      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。入れた話は、聞いている話が終わると、入れた順に続けて流れます（履歴からも聞けます）。</p>
     </div>
   </section>
 
@@ -332,6 +340,7 @@ input, select, textarea {
       <span id="offlineText"></span>
       <button type="button" id="offlineBtn" class="btn ghost small"></button>
     </div>
+    <p id="upNextBar" class="upnext" hidden></p>
     <ol id="chunkList" class="chunks"></ol>
   </section>
 
@@ -361,6 +370,17 @@ input, select, textarea {
         </button>
         <input id="vol" type="range" min="0" max="100" step="1" aria-label="音量">
       </div>
+      <span id="sleepBox" class="rate sleep">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.6A8.5 8.5 0 1 1 9.4 3.5a7 7 0 0 0 11.1 11.1z"/></svg><span id="sleepText"></span>
+        <select id="sleepSel" aria-label="おやすみタイマー">
+          <option value="0">タイマーなし</option>
+          <option value="15">15分で止める</option>
+          <option value="30">30分で止める</option>
+          <option value="45">45分で止める</option>
+          <option value="60">60分で止める</option>
+          <option value="end">この話の終わりで止める</option>
+        </select>
+      </span>
       <button type="button" id="rateBtn" class="rate" aria-label="再生速度">1.0×</button>
     </div>
   </div>
@@ -490,6 +510,12 @@ input, select, textarea {
     </section>
 
     <section class="group">
+      <h3>続けて聞く</h3>
+      <label class="check"><input id="autoNext" type="checkbox">話が終わったら、次の話へ続ける</label>
+      <p class="hint">「順番待ちに入れる」で入れた話と、履歴で「次に聞く」を押した話を、入れた順に続けて流します。ロック画面の「次へ」でも、次の話へ移れます。今夜はここで止めたいときは、再生画面の月のマーク（おやすみタイマー）で「この話の終わりで止める」を選んでください。</p>
+    </section>
+
+    <section class="group">
       <h3>読み方の辞書</h3>
       <textarea id="dict" rows="4" placeholder="怪異=かいい&#10;御手洗=みたらい"></textarea>
       <p class="hint">1行に「書き方=読み方」で登録すると、その読みで発音します。小説の「漢字《かんじ》」形式のルビも読みとして使います。</p>
@@ -589,7 +615,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -1653,7 +1679,7 @@ function renderProgress() {
   showSeekAt(done / R.total);
   const k = episodeAt(done);
   if (k !== R.curEp) { R.curEp = k; updateMedia(); }
-  if (!R.waiting) $('#playerStatus').textContent = R.finished ? '最後まで読み上げました' : statusText(done);
+  if (!R.waiting) $('#playerStatus').textContent = R.gap ? `次の話「${R.gap.doc.title || '（無題）'}」へ…` : R.finished ? '最後まで読み上げました' : statusText(done);
 }
 
 /* ---------- 再生位置のバー：クリック・ドラッグで好きな位置へ ---------- */
@@ -1744,6 +1770,8 @@ async function rememberDoc() {
   };
   R.title = R.doc.title;
   $('#docTitle').textContent = R.title;
+  dropUpNext(id); // 聞き始めた話は「次に聞く」から外す
+  renderUpNext();
   await docPut(R.doc);
   renderOfflineBar();
   if (!old) await idbStore('texts', 'readwrite', (s) => s.put(R.text, id));
@@ -1765,7 +1793,8 @@ function titleOf(text, filter, chunks) {
   const firstLine = filter ? cleanTitle(text.split('\n').find((l) => SPEAKABLE.test(l)) || '') : '';
   return (firstLine || chunks[0].display[0] || '').replace(/\s+/g, ' ').slice(0, 40);
 }
-function startReading(text, from = 0, offset = 0, doc = null) {
+// auto：前の話から続けて流すとき。見ている画面はそのままにする
+function startReading(text, from = 0, offset = 0, doc = null, auto = false) {
   stopAll();
   unlock(audio);
   R.text = text;
@@ -1798,7 +1827,7 @@ function startReading(text, from = 0, offset = 0, doc = null) {
   refreshSaved();
   $('#player').hidden = false;
   document.body.classList.add('has-player');
-  showView('read');
+  if (!auto) showView('read');
   playIndex(Math.min(from, R.chunks.length - 1), offset);
   rememberDoc();
 }
@@ -1807,6 +1836,7 @@ function stopAll() {
   R.token++;
   R.wantPlay = false;
   R.halted = false;
+  R.gap = null;
   audio.pause();
   for (const u of R.urls.values()) URL.revokeObjectURL(u);
   R.urls.clear();
@@ -1851,6 +1881,7 @@ function trimUrls() {
 async function playIndex(i, offset = 0, frac = 0, play = true) {
   if (i < 0 || i >= R.chunks.length) return;
   const token = ++R.token;
+  R.gap = null;
   R.idx = i;
   R.wantPlay = play;
   R.halted = false;
@@ -1897,6 +1928,8 @@ async function playIndex(i, offset = 0, frac = 0, play = true) {
 
 function togglePlay() {
   if (!R.chunks.length) return;
+  // 次の話へ移る間に止めたら、そこで止まる（次の話へは行かない）
+  if (R.gap) { cancelGap(); audio.pause(); return; }
   if (R.wantPlay) {
     R.wantPlay = false;
     audio.pause();
@@ -1918,14 +1951,21 @@ function prev() {
   if (audio.currentSrc === R.urls.get(R.idx) && audio.currentTime > 3) { audio.currentTime = 0; return; }
   if (R.idx > 0) playIndex(R.idx - 1);
 }
-function next() { if (R.idx + 1 < R.chunks.length) playIndex(R.idx + 1); }
+// 最後の段落で「次へ」を押したら、次に聞く話へ移る
+function next() {
+  if (R.idx + 1 < R.chunks.length) playIndex(R.idx + 1);
+  else skipToNext();
+}
 function skip(sec) {
   if (audio.currentSrc !== R.urls.get(R.idx)) return;
   audio.currentTime = Math.max(0, Math.min((audio.duration || 0) - 0.1, audio.currentTime + sec));
 }
 
+// 音を鳴らさない短い音（iPhoneで鳴らせるようにする音と、話と話の間）を流しているか
+const quiet = () => audio.currentSrc === silentUrl || audio.currentSrc === gapUrl;
 audio.addEventListener('ended', () => {
-  if (audio.currentSrc === silentUrl || !R.chunks.length || audio.currentSrc !== R.urls.get(R.idx)) return;
+  if (audio.currentSrc === gapUrl) { goNext(); return; }
+  if (quiet() || !R.chunks.length || audio.currentSrc !== R.urls.get(R.idx)) return;
   if (R.idx + 1 < R.chunks.length) { playIndex(R.idx + 1); return; }
   R.wantPlay = false;
   R.finished = true;
@@ -1933,19 +1973,23 @@ audio.addEventListener('ended', () => {
   savePos();
   renderPlay();
   renderProgress();
+  storyEnded();
 });
 audio.addEventListener('pause', () => {
+  // 話と話の間を、ロック画面や電話で止められたら、次の話へは行かない
+  if (audio.currentSrc === gapUrl) { if (!audio.ended && R.gap) cancelGap(); return; }
   // ロック画面や電話で止まったときは、こちらの状態も止める
-  if (audio.ended || R.swapping || audio.currentSrc === silentUrl) return;
+  if (audio.ended || R.swapping || quiet()) return;
   if (R.wantPlay && !R.waiting) { R.wantPlay = false; savePos(); renderPlay(); }
 });
 audio.addEventListener('play', () => {
-  if (audio.currentSrc === silentUrl) return;
+  if (quiet()) return;
   audio.playbackRate = settings.rate;
   if (!R.wantPlay) { R.wantPlay = true; renderPlay(); }
 });
 audio.addEventListener('timeupdate', () => {
-  if (audio.currentSrc === silentUrl) return;
+  checkSleep(); // 裏で動いているときは時計が遅れることがあるので、鳴っているあいだはここでも確かめる
+  if (quiet()) return;
   renderProgress();
   if (Date.now() - R.savedAt > 5000) savePos();
 });
@@ -2007,6 +2051,119 @@ if ('mediaSession' in navigator) {
   for (const [action, fn] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} }
 }
 
+/* ---------- 続けて次の話へ ---------- */
+// 次に聞く話の列。「順番待ちに入れる」で入れた話と、履歴で「次に聞く」を押した話。聞き始めたら列から外す
+let upNext = store.get('upNext', []);
+let gapUrl = null; // 話と話の間に流す、音のない2秒半
+const saveUpNext = () => store.set('upNext', upNext);
+const upNextIds = () => upNext.filter((id) => id !== R.doc?.id);
+function addUpNext(id) {
+  if ((R.doc?.id === id && R.chunks.length) || upNext.includes(id)) return;
+  upNext.push(id);
+  saveUpNext();
+  renderUpNext();
+}
+function dropUpNext(id) {
+  if (!upNext.includes(id)) return;
+  upNext = upNext.filter((x) => x !== id);
+  saveUpNext();
+  renderUpNext();
+}
+// 次に聞く話を、列の前から探す（履歴から消した話は飛ばす）
+async function nextStory() {
+  for (const id of upNextIds()) {
+    const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
+    if (doc && typeof text === 'string') return { doc, text };
+    dropUpNext(id);
+  }
+  return null;
+}
+// 話が終わったとき：おやすみタイマーが「この話の終わり」なら、ここで止める。次に聞く話があれば、少し間をおいて流す
+async function storyEnded() {
+  if (sleepT.mode === 'end') { setSleep('0'); return; }
+  if (!settings.autoNext) return;
+  const ctrl = R.ctrl, nx = await nextStory();
+  if (!nx || ctrl !== R.ctrl || !R.finished || R.wantPlay) return;
+  R.gap = nx;
+  R.wantPlay = true;
+  renderPlay();
+  renderProgress();
+  gapUrl ||= URL.createObjectURL(silentWav(2500));
+  audio.src = gapUrl;
+  audio.play().catch(() => goNext());
+}
+function goNext() {
+  const nx = R.gap;
+  if (!nx) return;
+  R.gap = null;
+  startNext(nx);
+}
+function startNext({ doc, text }) {
+  // 文章の欄が、いま終わった話のままなら、次の話に入れ替える（書きかけの文章があれば、そのまま）
+  if (textEl.value === R.text) { textEl.value = text; store.set('text', text); scheduleEstimate(); }
+  const pos = doc.pos || {};
+  startReading(text, pos.done ? 0 : pos.i || 0, pos.done ? 0 : pos.t || 0, doc, true);
+}
+function cancelGap() {
+  R.gap = null;
+  R.wantPlay = false;
+  renderPlay();
+  renderProgress();
+}
+async function skipToNext() {
+  if (R.gap) { goNext(); return; }
+  const ctrl = R.ctrl, nx = await nextStory();
+  if (nx && ctrl === R.ctrl) startNext(nx);
+}
+// 読み上げ画面の「この話のあとに続けて：〇〇」
+let upNextToken = 0;
+async function renderUpNext() {
+  const bar = $('#upNextBar'), token = ++upNextToken, ids = upNextIds();
+  refreshHistory();
+  if (!settings.autoNext || !ids.length || !R.chunks.length) { bar.hidden = true; return; }
+  const doc = await docGet(ids[0]);
+  if (token !== upNextToken) return;
+  bar.hidden = !doc;
+  if (!doc) return;
+  bar.textContent = '';
+  bar.append('この話のあとに続けて：', make('b', null, doc.title || '（無題）'), ids.length > 1 ? `（ほか${ids.length - 1}話）` : '');
+}
+
+/* ---------- おやすみタイマー ---------- */
+// 決めた時間がたつか、聞いている話が終わったら止める。止めた位置は覚えているので、次は「続きから」聞ける
+// Macなどでは、止める前の15秒で少しずつ音を小さくする（iPhoneはアプリから音量を変えられないので、そのまま止まる）
+const FADE_MS = 15000;
+const sleepT = { mode: '', until: 0, timer: 0 };
+function setSleep(v) {
+  clearInterval(sleepT.timer);
+  sleepT.timer = 0;
+  sleepT.mode = v === 'end' ? 'end' : Number(v) > 0 ? 'time' : '';
+  sleepT.until = sleepT.mode === 'time' ? Date.now() + Number(v) * 60000 : 0;
+  if (sleepT.mode === 'time') sleepT.timer = setInterval(checkSleep, 1000);
+  applyVolume(); // 小さくしていた音を戻す
+  renderSleep();
+}
+function checkSleep() {
+  if (sleepT.mode !== 'time') return;
+  const left = sleepT.until - Date.now();
+  if (left <= 0) {
+    if (R.gap || R.wantPlay) togglePlay();
+    setSleep('0');
+    return;
+  }
+  if (volumeWorks && left < FADE_MS) audio.volume = settings.volume * left / FADE_MS;
+  renderSleep();
+}
+function renderSleep() {
+  const on = !!sleepT.mode, min = Math.max(1, Math.ceil((sleepT.until - Date.now()) / 60000));
+  const text = sleepT.mode === 'time' ? `${min}分` : sleepT.mode === 'end' ? '話の終わり' : '';
+  $('#sleepBox').classList.toggle('on', on);
+  if ($('#sleepText').textContent !== text) $('#sleepText').textContent = text;
+  $('#sleepSel').setAttribute('aria-label', !on ? 'おやすみタイマー' : `おやすみタイマー（${sleepT.mode === 'end' ? 'この話の終わりで止める' : `あと${min}分で止める`}）`);
+  if (!on) $('#sleepSel').value = '0';
+}
+$('#sleepSel').addEventListener('change', (e) => setSleep(e.target.value));
+
 // 同じ文章を同じ声で読んだ履歴があれば、その時の区切り方で読む（保存済みの音声を使い回すため）
 async function findDoc(text) {
   const { engine, voice, style } = curProfile();
@@ -2054,6 +2211,7 @@ function openSettings(msg) {
   $('#price').value = settings.price;
   $('#dict').value = settings.dict;
   $('#scriptOnly').checked = settings.scriptOnly;
+  $('#autoNext').checked = settings.autoNext;
   $('#geminiFallback').checked = settings.geminiFallback;
   $('#saveCalls').checked = settings.saveCalls;
   $('#msFallback').checked = settings.msFallback;
@@ -2140,6 +2298,7 @@ $('#scriptOnly').addEventListener('change', (e) => { settings.scriptOnly = e.tar
 $('#readAfterword').addEventListener('change', (e) => { settings.readAfterword = e.target.checked; saveSettings(); });
 $('#geminiFallback').addEventListener('change', (e) => { settings.geminiFallback = e.target.checked; saveSettings(); renderUsage(); });
 $('#saveCalls').addEventListener('change', (e) => { settings.saveCalls = e.target.checked; saveSettings(); });
+$('#autoNext').addEventListener('change', (e) => { settings.autoNext = e.target.checked; saveSettings(); renderUpNext(); });
 function fillMs() {
   const reg = $('#msRegion'), sel = $('#msVoice');
   if (!reg.options.length) for (const [id, name] of Object.entries(MS_REGIONS)) reg.add(new Option(name, id));
@@ -2420,6 +2579,8 @@ async function renderHistory() {
     const state = make('span', 'hist-meta');
     if (playing) state.append(make('b', null, R.wantPlay ? '再生中' : '開いている'), ' ・ ');
     const job = saver.job?.id === d.id ? saver.job : null, queued = saver.queue.includes(d.id);
+    const nextAt = playing ? -1 : upNextIds().indexOf(d.id);
+    if (nextAt >= 0) state.append(make('b', null, `次に聞く・${nextAt + 1}番目`), ' ・ ');
     state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ `);
     const subIds = d.keys.filter((k) => keys.has(k) && subKeys.has(k)).map((k) => subKeys.get(k)), subs = subIds.length;
     if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : '');
@@ -2431,6 +2592,7 @@ async function renderHistory() {
     open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}${d.filter ? ' ・ 題名と本文のみ' : ''}`), state, bar);
     const actions = make('div', 'hist-actions');
     const acts = [['rename', '名前を変える'], ['delete', '削除']];
+    if (!playing) acts.unshift(nextAt >= 0 ? ['unnext', '次に聞くのをやめる'] : ['next', '次に聞く']);
     if (saved < d.n) acts.unshift(job || queued ? ['unsave', '保存をやめる'] : ['save', '端末に保存']);
     else if (subs && d.profile.engine === 'gemini' && geminiModel()) acts.unshift(['remake', 'Geminiの声で作り直す']);
     for (const [act, label] of acts) {
@@ -2454,6 +2616,8 @@ $('#histList').addEventListener('click', async (e) => {
   if (act === 'save') { saveDoc(id, title); return; }
   if (act === 'unsave') { stopSaving(id); return; }
   if (act === 'remake') { remakeSubs(id); return; }
+  if (act === 'next') { addUpNext(id); return; }
+  if (act === 'unnext') { dropUpNext(id); return; }
   if (act === 'rename') {
     const name = prompt('履歴の名前', title)?.trim();
     if (!name) return;
@@ -2483,6 +2647,7 @@ $('#histList').addEventListener('click', async (e) => {
     }
     // ほかの履歴でも使っている音声は残す
     stopSaving(id);
+    dropUpNext(id);
     const keep = new Set(docs.filter((d) => d.id !== id).flatMap((d) => d.keys));
     await idb('readwrite', (s) => { for (const k of doc.keys) if (!keep.has(k)) s.delete(k); return null; });
     await idbStore('docs', 'readwrite', (s) => s.delete(id));
@@ -2597,7 +2762,10 @@ let histTimer = 0;
 function renderSaving() {
   renderOfflineBar();
   renderQueue();
-  // 履歴の一覧は、開いているときだけ、まとめて描き直す
+  refreshHistory();
+}
+// 履歴の一覧は、開いているときだけ、まとめて描き直す
+function refreshHistory() {
   if (!$('#historyView').hidden && !histTimer) histTimer = setTimeout(() => { histTimer = 0; renderHistory(); }, 400);
 }
 // 入力画面の「作る順番待ち」。いま作っている話を先頭に並べる
@@ -2641,6 +2809,7 @@ async function queueText(text) {
     await docPut(doc);
     await idbStore('texts', 'readwrite', (s) => s.put(text, doc.id));
   }
+  addUpNext(doc.id);
   const have = await cacheKeys();
   if (doc.keys.every((k) => have.has(k))) return { doc, saved: true };
   const ids = [saver.job?.id, ...saver.queue].filter(Boolean), at = ids.indexOf(doc.id);
@@ -2656,8 +2825,10 @@ $('#queueBtn').addEventListener('click', async () => {
   // 次の話をすぐ貼り付けられるよう、欄を空にする（文章は履歴に残っている）
   textEl.value = '';
   textEl.dispatchEvent(new Event('input'));
-  showNotice(r.saved ? `「${r.doc.title}」は、もう端末に保存してあります。履歴から聞けます。`
-    : !r.ahead ? `「${r.doc.title}」を作り始めました。できたら履歴から聞けます。` : `「${r.doc.title}」を順番待ちに入れました。前の${r.ahead}話ができたら、続けて作ります。`);
+  // 聞いている話があれば、その話が終わったら続けて流れる
+  const after = settings.autoNext && R.chunks.length && R.doc?.id !== r.doc.id ? '聞いている話のあとに、続けて流れます。' : '';
+  showNotice(r.saved ? `「${r.doc.title}」は、もう端末に保存してあります。${after || '履歴から聞けます。'}`
+    : !r.ahead ? `「${r.doc.title}」を作り始めました。${after || 'できたら履歴から聞けます。'}` : `「${r.doc.title}」を順番待ちに入れました。前の${r.ahead}話ができたら、続けて作ります。${after}`);
 });
 // 読み上げ画面：段落ごとの印と、全体の保存の様子
 function noteSaved(k) {
@@ -2925,6 +3096,7 @@ if (saver.queue.length) {
 }
 renderEngine();
 renderLimit();
+renderSleep();
 scheduleEstimate();
 // 前に保存したWAVは、起動して少し落ち着いてから1つずつMP3に変える
 setTimeout(async () => { if (!store.get('wavScanned', false)) await findOldWav(); squeezeAll(); }, 3000);
