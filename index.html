@@ -150,20 +150,19 @@ body.has-player main { padding-bottom: 190px; }
 
 /* 目次 */
 .toc { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.toc li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: 8px; }
 .toc li + li { border-top: 1px solid var(--line); }
-.toc button { display: grid; grid-template-columns: 3.4em minmax(0, 1fr); gap: 2px 10px; width: 100%; padding: 12px 4px; border: 0; background: transparent; text-align: left; border-radius: 8px; }
+.toc .go { display: grid; grid-template-columns: 3.4em minmax(0, 1fr); gap: 2px 10px; width: 100%; padding: 12px 4px; border: 0; background: transparent; text-align: left; border-radius: 8px; }
 .toc .no { grid-row: span 2; font: 700 13px/1.9 var(--f-ui); color: var(--muted); font-variant-numeric: tabular-nums; }
 .toc .t { font: 700 16px/1.6 var(--f-read); overflow-wrap: anywhere; }
 .toc .s { font-size: 13px; line-height: 1.55; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .toc li.done .t { color: var(--muted); }
-.toc li.now button { background: var(--now); }
+.toc li.now { background: var(--now); }
 .toc li.now .no { color: var(--accent); }
-/* 長押しで原文をコピーするので、文字が選ばれたり、iPhoneのメニューが出たりしないようにする */
+/* 押したときに題名の文字が選ばれないようにする */
 .toc button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
-.toc li.held button { background: var(--now); box-shadow: inset 0 0 0 2px var(--accent); }
-.toc-msg { margin: -12px 0 0; }
-.toc-msg.ok { color: var(--accent); font-weight: 700; }
-.toc-msg .btn { margin-top: 8px; }
+.toc .copy { margin: 0 4px 0 6px; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+.toc .copy.ok { color: var(--accent); border-color: var(--accent); font-weight: 700; }
 
 /* プレーヤー */
 .player {
@@ -547,7 +546,6 @@ input, select, textarea {
       <h2 id="tocTitle">目次</h2>
       <button type="button" id="tocClose" class="btn ghost small">閉じる</button>
     </div>
-    <p id="tocMsg" class="hint toc-msg" aria-live="polite"></p>
     <ol id="tocList" class="toc"></ol>
   </div>
 </dialog>
@@ -2923,14 +2921,20 @@ function openToc() {
   const now = R.curEp;
   R.episodes.forEach((ep, k) => {
     const li = make('li', k === now ? 'now' : k < now ? 'done' : '');
-    const b = make('button');
+    const b = make('button', 'go');
     b.type = 'button';
     b.dataset.k = k;
     b.append(make('span', 'no', `第${k + 1}話`), make('span', 't', ep.title), make('span', 's', k === now ? `再生中${ep.sub ? ' ・ ' + ep.sub : ''}` : ep.sub));
     li.append(b);
+    if (ep.rawStart != null) {
+      const c = make('button', 'btn ghost copy', '原文をコピー');
+      c.type = 'button';
+      c.dataset.copy = k;
+      c.setAttribute('aria-label', `第${k + 1}話の原文をコピー`);
+      li.append(c);
+    }
     list.append(li);
   });
-  tocHint();
   tocDlg.showModal();
   list.querySelector('li.now')?.scrollIntoView({ block: 'center' });
 }
@@ -2938,10 +2942,10 @@ $('#tocBtn').addEventListener('click', openToc);
 $('#tocClose').addEventListener('click', () => tocDlg.close());
 tocDlg.addEventListener('click', (e) => { if (e.target === tocDlg) tocDlg.close(); });
 $('#tocList').addEventListener('click', (e) => {
+  const c = e.target.closest('button[data-copy]');
+  if (c) { copyEpisode(c); return; }
   const b = e.target.closest('button[data-k]');
   if (!b) return;
-  // 長押しでコピーしたあとの「押した」扱いでは、その話へ飛ばない
-  if (tocHeld) { tocHeld = false; return; }
   const ep = R.episodes[+b.dataset.k];
   tocDlg.close();
   // 題名の頭が切れないよう、ほんの少し手前から
@@ -2950,23 +2954,11 @@ $('#tocList').addEventListener('click', (e) => {
   setTimeout(() => setNow(ep.chunk, true), 0);
 });
 
-// 長押し：その話の元の文章（要約・あとがき・概要欄用タイトルも入ったまま）をコピーする
-// iPhoneでは、指を離したときでないとコピーが許されないので、長押しで印をつけて、離したときにコピーする
-const tocMsg = $('#tocMsg');
-let tocPress = null, tocHeld = false;
-function tocHint() {
-  tocMsg.className = 'hint toc-msg';
-  tocMsg.textContent = '話を長押しして指を離すと、要約やあとがきも入った元の文をコピーできます。';
-}
+// 「原文をコピー」：その話の元の文章（要約・あとがき・概要欄用タイトルも入ったまま）をコピーする
 function episodeRaw(k) {
   const ep = R.episodes[k];
   if (!ep || ep.rawStart == null) return '';
   return R.text.replace(/\r\n?/g, '\n').split('\n').slice(ep.rawStart, ep.rawEnd).join('\n').replace(/^(\s*\n)+/, '').trimEnd();
-}
-const epName = (k) => `第${k + 1}話「${R.episodes[k].title}」`;
-function copyDone(k, text) {
-  tocMsg.className = 'hint toc-msg ok';
-  tocMsg.textContent = `✓ ${epName(k)}の元の文をコピーしました（${[...text].length.toLocaleString()}字）`;
 }
 // 古い書き方のコピー（navigator.clipboard が使えないとき）
 function copyByTextarea(text) {
@@ -2982,54 +2974,20 @@ function copyByTextarea(text) {
   ta.remove();
   return ok;
 }
-function copyEpisode(k) {
-  const text = episodeRaw(k);
+function copyEpisode(btn) {
+  const text = episodeRaw(+btn.dataset.copy);
   if (!text) return;
-  const fallback = () => {
-    if (copyByTextarea(text)) { copyDone(k, text); return; }
-    // それでもだめなら、ボタンを押してもらってコピーする
-    tocMsg.className = 'hint toc-msg';
-    tocMsg.textContent = `${epName(k)}をコピーできませんでした。下のボタンを押してください。`;
-    const b = make('button', 'btn small', '元の文をコピー');
-    b.type = 'button';
-    b.addEventListener('click', () => {
-      if (copyByTextarea(text)) { copyDone(k, text); return; }
-      navigator.clipboard?.writeText(text).then(() => copyDone(k, text), () => { tocMsg.textContent = 'コピーできませんでした。'; });
-    });
-    tocMsg.append(make('br'), b);
+  const show = (label, ok) => {
+    clearTimeout(btn.timer);
+    btn.textContent = label;
+    btn.classList.toggle('ok', ok);
+    btn.timer = setTimeout(() => { btn.textContent = '原文をコピー'; btn.classList.remove('ok'); }, 2500);
   };
-  if (!navigator.clipboard?.writeText) { fallback(); return; }
-  navigator.clipboard.writeText(text).then(() => copyDone(k, text), fallback);
+  const done = () => show('✓ コピーしました', true);
+  const fallback = () => (copyByTextarea(text) ? done() : show('コピーできません', false));
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
 }
-function endPress() {
-  if (!tocPress) return;
-  clearTimeout(tocPress.timer);
-  tocPress.b.parentElement.classList.remove('held');
-  tocPress = null;
-}
-function releasePress() {
-  const p = tocPress;
-  if (p?.ready) { tocHeld = true; copyEpisode(+p.b.dataset.k); }
-  endPress();
-}
-const tocList = $('#tocList');
-tocList.addEventListener('pointerdown', (e) => {
-  tocHeld = false;
-  endPress();
-  const b = e.target.closest('button[data-k]');
-  if (!b || e.button > 0) return;
-  const p = { b, x: e.clientX, y: e.clientY, ready: false };
-  p.timer = setTimeout(() => { p.ready = true; b.parentElement.classList.add('held'); }, 500);
-  tocPress = p;
-});
-// 指が動いたら（目次を動かしているときは）長押しにしない
-tocList.addEventListener('pointermove', (e) => {
-  if (tocPress && !tocPress.ready && Math.hypot(e.clientX - tocPress.x, e.clientY - tocPress.y) > 10) endPress();
-});
-tocList.addEventListener('pointercancel', endPress);
-tocList.addEventListener('pointerup', (e) => { if (e.pointerType !== 'touch') releasePress(); });
-tocList.addEventListener('touchend', releasePress);
-tocList.addEventListener('contextmenu', (e) => { if (e.target.closest('button[data-k]')) e.preventDefault(); });
 
 /* ---------- 書き出し ---------- */
 // 段落ごとのMP3をつなぐ前に、先頭のタグと長さ情報のフレームを外す（残すと再生時間が最初の段落分に見えてしまう）
