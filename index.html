@@ -164,6 +164,20 @@ body.has-player main { padding-bottom: 190px; }
 .toc .copy { margin: 0 4px 0 6px; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
 .btn.ok { color: var(--accent); border-color: var(--accent); font-weight: 700; }
 
+/* ブックマーク */
+.rate.mark-btn { justify-content: center; width: 36px; padding: 0; color: var(--muted); }
+.mark-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linejoin: round; stroke-linecap: round; }
+.rate.mark-btn.on { color: var(--accent); border-color: var(--accent); }
+.mark-btn.on .rib { fill: currentColor; }
+.mark-btn.on .plus { display: none; }
+.rate.mark-btn:disabled { opacity: .45; cursor: default; }
+/* 本文の中で、ブックマークした行の左に小さなしおり */
+.chunk p[data-mark] { position: relative; }
+.chunk p[data-mark]::after { content: ""; position: absolute; left: -11px; top: .62em; width: 7px; height: 12px; background: var(--accent); clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%); }
+.mark-doc { margin: 22px 2px 8px; font: 700 15px/1.5 var(--f-read); color: var(--muted); overflow-wrap: anywhere; }
+.mark-doc:first-child { margin-top: 4px; }
+.mark-snip { font: 500 15px/1.8 var(--f-read); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+
 /* プレーヤー */
 .player {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
@@ -284,6 +298,9 @@ input, select, textarea {
     <span>よみこえ</span>
   </div>
   <div class="top-actions">
+    <button id="openMarks" class="icon-btn" aria-label="ブックマーク">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 3.8h11v16.4L12 16.4l-5.5 3.8z"/></svg>
+    </button>
     <button id="openHistory" class="icon-btn" aria-label="履歴">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.8 12a8.2 8.2 0 1 0 2.4-5.8"/><path d="M3.8 4.6v4.2H8"/><path d="M12 7.6V12l3 1.8"/></svg>
     </button>
@@ -360,6 +377,17 @@ input, select, textarea {
     <p id="histEmpty" class="hist-empty" hidden>まだ履歴はありません。<br>文章を読み上げると、ここに残ります。</p>
     <ul id="histList" class="hist"></ul>
   </section>
+
+  <section id="marksView" hidden>
+    <div class="read-head">
+      <button type="button" id="marksBack" class="btn ghost small">戻る</button>
+      <h1>ブックマーク</h1>
+      <span aria-hidden="true"></span>
+    </div>
+    <p class="hint hist-note">聞いている途中で、再生画面のしおりのマークを押すと、その位置がここに残ります。押すと、その少し手前から聞けます。同じところでもう一度マークを押すと、ブックマークが外れます。</p>
+    <p id="marksEmpty" class="hist-empty" hidden>まだブックマークはありません。<br>聞いている途中で、再生画面のしおりのマークを押すと、ここに残ります。</p>
+    <div id="marksList"></div>
+  </section>
 </main>
 
 <div id="player" class="player" hidden>
@@ -370,6 +398,9 @@ input, select, textarea {
   <div class="player-row">
     <p id="playerStatus" class="status"></p>
     <div class="player-tools">
+      <button type="button" id="markBtn" class="rate mark-btn" aria-label="ここをブックマークする" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="rib" d="M6.5 3.8h11v16.4L12 16.4l-5.5 3.8z"/><path class="plus" d="M12 7.4v5.4M9.3 10.1h5.4"/></svg>
+      </button>
       <div id="volBox" class="vol" hidden>
         <button type="button" id="muteBtn" aria-label="消音">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke="none"/><path id="volWaves" d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
@@ -1531,11 +1562,12 @@ const sessionSig = (text, dict, filter) => hash(text + '\u0000' + dict + '\u0000
 /* ---------- 画面 ---------- */
 let lastView = 'edit';
 function showView(name) {
-  for (const v of ['edit', 'read', 'history']) $(`#${v}View`).hidden = v !== name;
-  if (name !== 'history') lastView = name;
+  for (const v of ['edit', 'read', 'history', 'marks']) $(`#${v}View`).hidden = v !== name;
+  if (name === 'edit' || name === 'read') lastView = name;
   if (name === 'read') setTimeout(() => setNow(R.idx, true), 0);
   else if (name === 'edit') scheduleEstimate();
-  else renderHistory();
+  else if (name === 'history') renderHistory();
+  else renderMarks();
   scrollTo(0, 0);
 }
 function showNotice(text, label, fn) {
@@ -1623,7 +1655,7 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------- 再生 ---------- */
 const audio = $('#audio');
-const R = { chunks: [], chunkKeys: [], saved: new Set(), prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, episodes: [], curEp: -1 };
+const R = { chunks: [], chunkKeys: [], saved: new Set(), prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, docId: '', episodes: [], curEp: -1, flash: null };
 let silentUrl = null;
 
 function silentWav(ms = 200, rate = 8000) {
@@ -1657,6 +1689,7 @@ function renderChunks() {
     const p = list.children[ep.chunk]?.children[ep.para];
     if (p) { p.classList.add('ep-title'); p.dataset.ep = `第${k + 1}話`; }
   });
+  markParas();
 }
 $('#chunkList').addEventListener('click', (e) => {
   const li = e.target.closest('.chunk');
@@ -1706,7 +1739,8 @@ function renderProgress() {
   showSeekAt(done / R.total);
   const k = episodeAt(done);
   if (k !== R.curEp) { R.curEp = k; updateMedia(); }
-  if (!R.waiting) $('#playerStatus').textContent = R.gap ? `次の話「${R.gap.doc.title || '（無題）'}」へ…` : R.finished ? '最後まで読み上げました' : statusText(done);
+  renderMarkBtn();
+  if (!R.waiting) $('#playerStatus').textContent = R.flash && Date.now() < R.flash.until ? R.flash.text : R.gap ? `次の話「${R.gap.doc.title || '（無題）'}」へ…` : R.finished ? '最後まで読み上げました' : statusText(done);
 }
 
 /* ---------- 再生位置のバー：クリック・ドラッグで好きな位置へ ---------- */
@@ -1829,6 +1863,7 @@ function startReading(text, from = 0, offset = 0, doc = null, auto = false) {
   R.dict = doc ? doc.dict : settings.dict;
   R.doc = null;
   R.filter = doc ? doc.filter || null : readFilterFor(text);
+  R.docId = docIdOf(text, R.profile, R.dict, R.filter); // 履歴に残すときと同じ印（ブックマークをこの話に結びつける）
   // 話の題名の位置。題名と本文だけを読むときは読む文章の中、全文を読むときは元の文章の中で探す
   const stories = parseScript(text, R.filter || {}).stories.map((st) => ({ ...st, line: R.filter ? st.line : st.rawLine }));
   R.chunks = chunkText(readableOf(text, R.filter), { engine: R.profile.chunkBy || R.profile.engine, dict: R.dict, chunk: R.profile.chunk || 1, marks: new Set(stories.map((st) => st.line)) });
@@ -2452,8 +2487,9 @@ $('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.va
 $('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
-  if (!confirm('保存した音声と履歴をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
+  if (!confirm('保存した音声と履歴（ブックマークも）をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
   await cacheClear();
+  dropMarks();
   R.doc = null;
   renderCache();
 });
@@ -2613,6 +2649,8 @@ async function renderHistory() {
     const subIds = d.keys.filter((k) => keys.has(k) && subKeys.has(k)).map((k) => subKeys.get(k)), subs = subIds.length;
     if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : '');
     else state.append(job ? `端末に保存しています… ${job.done}/${d.n}段落` : queued ? `保存の順番待ち（${saved}/${d.n}段落）` : `端末に保存 ${saved}/${d.n}段落`);
+    const nm = marks.filter((m) => m.doc === d.id).length;
+    if (nm) state.append(` ・ ブックマーク${nm}件`);
     const bar = make('span', 'meter');
     const fill = make('span');
     fill.style.width = `${pos.done ? 100 : Math.round((pos.i || 0) / d.n * 100)}%`;
@@ -2688,16 +2726,18 @@ $('#histList').addEventListener('click', async (e) => {
     await idbStore('docs', 'readwrite', (s) => s.delete(id));
     await idbStore('texts', 'readwrite', (s) => s.delete(id));
     rawCache.delete(id);
+    dropMarks(id);
     renderHistory();
     return;
   }
-  // 開く：iPhoneではタップした瞬間に音を鳴らせるようにしておく必要がある
-  unlock(audio);
+  // 今開いている話なら、鳴っている音はそのまま（止めていれば続きから鳴らす）
   if (R.doc?.id === id && R.chunks.length) {
     showView('read');
     if (!R.wantPlay) togglePlay();
     return;
   }
+  // 開く：iPhoneではタップした瞬間に音を鳴らせるようにしておく必要がある
+  unlock(audio);
   const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
   if (!doc || typeof text !== 'string') { showNotice('この履歴の文章が見つかりませんでした。'); return; }
   textEl.value = text;
@@ -2966,10 +3006,11 @@ $('#tocList').addEventListener('click', (e) => {
 });
 
 // 「原文をコピー」：その話の元の文章（要約・あとがき・概要欄用タイトルも入ったまま）をコピーする
+const rawLines = (text, s, e) => text.replace(/\r\n?/g, '\n').split('\n').slice(s, e).join('\n').replace(/^(\s*\n)+/, '').trimEnd();
 function episodeRaw(k) {
   const ep = R.episodes[k];
   if (!ep || ep.rawStart == null) return '';
-  return R.text.replace(/\r\n?/g, '\n').split('\n').slice(ep.rawStart, ep.rawEnd).join('\n').replace(/^(\s*\n)+/, '').trimEnd();
+  return rawLines(R.text, ep.rawStart, ep.rawEnd);
 }
 function copyEpisode(btn) { copyRaw(btn, episodeRaw(+btn.dataset.copy)); }
 
@@ -3012,6 +3053,168 @@ function copyRaw(btn, src) {
     navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]).then(done, () => src.then(plain, fail));
   } else src.then(plain, fail);
 }
+
+/* ---------- ブックマーク ---------- */
+// 聞いている途中の位置を残す。段落（i）と、その段落の音声の何秒目か（t）で覚える。
+// 本文の何文字目かは秒数からの目安なので、表示する文（snip）と本文の印（para）はだいたいの位置
+let marks = store.get('marks', []);
+const saveMarks = () => store.set('marks', marks);
+const MARK_NEAR = 10; // この秒数より近ければ、同じところのブックマークとみなす（押し直すと外れる）
+const MARK_BACK = 4; // 聞き直すときは、押した少し手前から
+const fmtSec = (s) => (s < 60 ? `${Math.floor(s)}秒` : `${Math.floor(s / 60)}分${String(Math.floor(s % 60)).padStart(2, '0')}秒`);
+function curSpot() {
+  const playingThis = audio.currentSrc && audio.currentSrc === R.urls.get(R.idx);
+  const dur = playingThis && audio.duration ? audio.duration : 0;
+  return { i: R.idx, t: dur ? audio.currentTime : 0, dur };
+}
+const canMark = () => R.chunks.length > 0 && !R.finished && !R.gap;
+function markNear() {
+  if (!canMark()) return null;
+  const { i, t } = curSpot();
+  return marks.find((m) => m.doc === R.docId && m.i === i && Math.abs(m.t - t) <= MARK_NEAR) || null;
+}
+// 段落の中の、だいたい frac のところにある行と文
+function spotText(i, frac) {
+  const ds = R.chunks[i]?.display || [];
+  let pos = frac * ds.reduce((a, d) => a + d.length, 0), para = 0;
+  while (para < ds.length - 1 && pos >= ds[para].length) { pos -= ds[para].length; para++; }
+  const sents = splitSentences(ds[para] || '');
+  let k = 0;
+  for (let acc = 0; k < sents.length - 1 && acc + sents[k].length <= pos; k++) acc += sents[k].length;
+  // 「はい。」のような短い文だけだと分かりにくいので、短ければ次の文も足す
+  let snip = '';
+  for (; k < sents.length && snip.trim().length < 16; k++) snip += sents[k];
+  snip = snip.trim();
+  return { para, snip: [...snip].length > 80 ? `${[...snip].slice(0, 80).join('')}…` : snip };
+}
+function toggleMark() {
+  if (!canMark()) return;
+  const near = markNear();
+  if (near) {
+    marks = marks.filter((m) => m !== near);
+    flash('ブックマークを外しました');
+  } else {
+    const { i, t, dur } = curSpot(), frac = dur ? Math.min(1, t / dur) : 0;
+    const k = episodeAt(R.prefix[i] + R.chunks[i].chars * frac), ep = R.episodes[k];
+    marks.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), doc: R.docId, title: R.title,
+      i, t: Math.round(t * 10) / 10, dur: Math.round(dur * 10) / 10, ...spotText(i, frac),
+      eps: R.episodes.length, ep: ep ? k : -1, epTitle: ep?.title || '', rawStart: ep?.rawStart ?? null, rawEnd: ep?.rawEnd ?? null, at: Date.now(),
+    });
+    flash(ep && R.episodes.length > 1 ? `第${k + 1}話のこの場所をブックマークしました` : 'この場所をブックマークしました');
+  }
+  saveMarks();
+  markParas();
+  refreshHistory();
+}
+// 再生画面の下の一行に、少しのあいだだけ出す
+function flash(text) {
+  R.flash = { text, until: Date.now() + 2200 };
+  renderProgress();
+  setTimeout(renderProgress, 2300);
+}
+function renderMarkBtn() {
+  const b = $('#markBtn'), on = !!markNear();
+  b.disabled = !canMark();
+  if (b.classList.contains('on') === on) return;
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  b.setAttribute('aria-label', on ? 'このブックマークを外す' : 'ここをブックマークする');
+}
+// 本文の中の、ブックマークした行に印を付ける
+function markParas() {
+  const list = $('#chunkList');
+  for (const p of list.querySelectorAll('p[data-mark]')) delete p.dataset.mark;
+  for (const m of marks) {
+    const p = m.doc === R.docId ? list.children[m.i]?.children[m.para] : null;
+    if (p) p.dataset.mark = '';
+  }
+}
+function dropMarks(id) {
+  const left = id ? marks.filter((m) => m.doc !== id) : [];
+  if (left.length === marks.length) return;
+  marks = left;
+  saveMarks();
+  markParas();
+  renderMarkBtn();
+}
+$('#markBtn').addEventListener('click', toggleMark);
+
+// ブックマークの一覧：話ごとにまとめ、新しくブックマークした話を上に
+let marksToken = 0;
+async function renderMarks() {
+  const token = ++marksToken, docs = new Map((await docAll()).map((d) => [d.id, d]));
+  if (token !== marksToken) return;
+  // 履歴から消した話のブックマークは残さない
+  const live = marks.filter((m) => docs.has(m.doc));
+  if (live.length !== marks.length) { marks = live; saveMarks(); }
+  const box = $('#marksList'), groups = new Map();
+  box.textContent = '';
+  $('#marksEmpty').hidden = marks.length > 0;
+  for (const m of [...marks].sort((a, b) => b.at - a.at)) {
+    if (!groups.has(m.doc)) groups.set(m.doc, []);
+    groups.get(m.doc).push(m);
+  }
+  for (const [id, ms] of groups) {
+    const d = docs.get(id), ul = make('ul', 'hist');
+    box.append(make('h2', 'mark-doc', d.title || ms[0].title || '（無題）'), ul);
+    for (const m of ms.sort((a, b) => a.i - b.i || a.t - b.t)) {
+      const li = make('li', 'hist-item'), open = make('button', 'hist-open'), actions = make('div', 'hist-actions');
+      li.dataset.id = m.id;
+      open.type = 'button';
+      if (m.eps > 1 && m.ep >= 0) open.append(make('span', 'hist-title', `第${m.ep + 1}話　${m.epTitle}`));
+      open.append(make('span', 'mark-snip', m.snip || '（この段落の初め）'), make('span', 'hist-meta', `${d.n > 1 ? `${m.i + 1}段落目の` : ''}${fmtSec(m.t)}あたり ・ ${fmtDate(m.at)}`));
+      for (const [act, label] of [['copy', m.eps > 1 && m.rawStart != null ? 'この話の原文をコピー' : '原文をコピー'], ['delete', '消す']]) {
+        const b = make('button', 'btn ghost small', label);
+        b.type = 'button';
+        b.dataset.act = act;
+        actions.append(b);
+      }
+      li.append(open, actions);
+      ul.append(li);
+    }
+  }
+  // 「原文をコピー」をすぐコピーできるよう、文章を先に読んでおく
+  for (const id of groups.keys()) if (!rawCache.has(id)) textGet(id).then((t) => { if (typeof t === 'string') rawCache.set(id, t); }, () => {});
+}
+async function openMark(m) {
+  const back = Math.max(0, m.t - MARK_BACK);
+  if (R.docId === m.doc && R.chunks.length) {
+    showView('read');
+    jumpTo(m.i, m.dur ? back / m.dur : 0, true);
+    setTimeout(() => setNow(m.i, true), 0);
+    return;
+  }
+  unlock(audio); // iPhoneは、押した瞬間に音を鳴らせるようにしておく
+  const [doc, text] = await Promise.all([docGet(m.doc), textGet(m.doc)]);
+  if (!doc || typeof text !== 'string') { showNotice('このブックマークの文章が見つかりませんでした。'); return; }
+  textEl.value = text;
+  store.set('text', text);
+  hideNotice();
+  startReading(text, m.i, back, doc);
+}
+$('#openMarks').addEventListener('click', () => showView('marks'));
+$('#marksBack').addEventListener('click', () => showView(lastView === 'read' && R.chunks.length ? 'read' : 'edit'));
+$('#marksList').addEventListener('click', (e) => {
+  const li = e.target.closest('.hist-item'), m = li && marks.find((x) => x.id === li.dataset.id);
+  if (!m) return;
+  const btn = e.target.closest('[data-act]');
+  if (btn?.dataset.act === 'copy') {
+    const cut = (t) => (m.eps > 1 && m.rawStart != null ? rawLines(t, m.rawStart, m.rawEnd) : t);
+    const t = rawCache.get(m.doc) ?? (R.docId === m.doc ? R.text : null);
+    copyRaw(btn, t != null ? cut(t) : textGet(m.doc).then((x) => (typeof x === 'string' ? cut(x) : '')));
+    return;
+  }
+  if (btn?.dataset.act === 'delete') {
+    marks = marks.filter((x) => x !== m);
+    saveMarks();
+    markParas();
+    renderMarkBtn();
+    renderMarks();
+    return;
+  }
+  if (e.target.closest('.hist-open')) openMark(m);
+});
 
 /* ---------- 書き出し ---------- */
 // 段落ごとのMP3をつなぐ前に、先頭のタグと長さ情報のフレームを外す（残すと再生時間が最初の段落分に見えてしまう）
