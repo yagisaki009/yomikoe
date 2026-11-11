@@ -422,7 +422,7 @@ input, select, textarea {
           <option value="end">この話の終わりで止める</option>
         </select>
       </span>
-      <button type="button" id="rateBtn" class="rate" aria-label="再生速度">1.0×</button>
+      <button type="button" id="rateBtn" class="rate" aria-label="再生速度">0.9×</button>
     </div>
   </div>
   <div class="controls">
@@ -656,13 +656,15 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 1, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
 // MicrosoftのHDの声は無料のプランで使えなかったので、シオリにする
 if (settings.msVoice.includes('DragonHD')) settings.msVoice = 'ja-JP-ShioriNeural';
 const saveSettings = () => store.set('settings', settings);
+// 速さの初期値を1.0から0.9にした（2026-11-11）。前の初期値のまま（1.0）の端末は、一度だけ0.9にする。自分で選んだ速さは変えない
+if (!store.get('rate09', false)) { if (settings.rate === 1) { settings.rate = 0.9; saveSettings(); } store.set('rate09', true); }
 const curVoice = () => (settings.engine === 'gemini' ? settings.geminiVoice : settings.voice);
 const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 // 動作確認のときだけ宛先を差し替えられるようにしてある
