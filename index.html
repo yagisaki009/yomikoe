@@ -136,6 +136,9 @@ body.has-player main { padding-bottom: 190px; }
 .hist-meta b { color: var(--accent); font-weight: 700; }
 .hist-open .meter { margin-top: 8px; height: 4px; }
 .hist-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; padding: 0 12px 12px; }
+.hist-export { margin: 0 0 14px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+.hist-export .hint { margin: 8px 0 0; }
+.hist-export .hist-actions { justify-content: flex-start; padding: 8px 0 0; }
 
 /* 作る順番待ち */
 .queue { margin-top: 20px; }
@@ -378,6 +381,15 @@ input, select, textarea {
       <span aria-hidden="true"></span>
     </div>
     <p class="hint hist-note">読み上げた文章は、声の組み合わせごとにここに残ります。作った音声はこの端末に保存されているので、開いて聞き直しても回数や料金はかかりません。「端末に保存」を押すと、残りの段落もまとめて作って、この端末に保存します。すべて保存した履歴（✓ 端末に保存済み）は消しません。途中までの履歴は、保存が<span class="cache-limit">3GB</span>を超えると古い音声から消えます（上限は設定で変えられます）。</p>
+    <div class="hist-export">
+      <button type="button" id="exportAllBtn" class="btn ghost small">貼った原文を全部つなげる</button>
+      <p class="hint">履歴に残っている文章を、貼ったままの形（要約やあとがきも含めて）で、1つのファイルにつなげます。同じ文章を別の声で読んだ分は、1本にまとめます。</p>
+      <p id="exportAllInfo" class="hint" hidden></p>
+      <div id="exportAllActs" class="hist-actions" hidden>
+        <button type="button" id="exportAllShare" class="btn ghost small">ファイルにして保存・送る</button>
+        <button type="button" id="exportAllCopy" class="btn ghost small">まとめてコピー</button>
+      </div>
+    </div>
     <p id="histEmpty" class="hist-empty" hidden>まだ履歴はありません。<br>文章を読み上げると、ここに残ります。</p>
     <ul id="histList" class="hist"></ul>
   </section>
@@ -1572,7 +1584,7 @@ function showView(name) {
   if (name === 'edit' || name === 'read') lastView = name;
   if (name === 'read') setTimeout(() => setNow(R.idx, true), 0);
   else if (name === 'edit') scheduleEstimate();
-  else if (name === 'history') renderHistory();
+  else if (name === 'history') { resetExportAll(); renderHistory(); }
   else renderMarks();
   scrollTo(0, 0);
 }
@@ -2682,6 +2694,65 @@ async function renderHistory() {
   // 「原文をコピー」をすぐコピーできるよう、文章を先に読んでおく
   for (const d of docs) if (!rawCache.has(d.id)) textGet(d.id).then((t) => { if (typeof t === 'string') rawCache.set(d.id, t); }, () => {});
 }
+
+// 履歴にある文章を、貼ったままの形で、古い順に1つのファイルへつなげる（同じ文章は1本にまとめる）
+const fmtFull = (ts) => { const d = new Date(ts); return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
+let exportAll = null;
+function resetExportAll() { exportAll = null; $('#exportAllActs').hidden = true; $('#exportAllInfo').hidden = true; }
+async function buildAllRaw() {
+  const docs = (await docAll()).sort((a, b) => a.createdAt - b.createdAt);
+  const items = [], seen = new Set(), missing = [];
+  for (const d of docs) {
+    let t = rawCache.get(d.id);
+    if (typeof t !== 'string') t = await textGet(d.id).catch(() => null);
+    if (typeof t !== 'string' || !t.trim()) { missing.push(d.title || '（無題）'); continue; }
+    if (seen.has(t)) continue;
+    seen.add(t);
+    items.push({ title: d.title || '（無題）', at: d.createdAt, text: t });
+  }
+  const mark = '◆◆◆◆◆ 原文まとめ ◆◆◆◆◆', n = items.length, now = Date.now();
+  const head = [`${mark} よみこえの履歴（${fmtFull(now)}に書き出し）`, `全${n}本。貼った文章を、削らずそのまま並べています。見出しと目次は、つなぐときに足したものです。`, '', ...items.map((it, i) => `[${i + 1}] ${it.title}`), '', ''].join('\n');
+  const body = items.map((it, i) => `${mark} [${i + 1}／${n}] ${it.title} ・ ${fmtFull(it.at)}に読み上げ\n${it.text.endsWith('\n') ? it.text : `${it.text}\n`}`).join('\n');
+  const text = `${head}${body}`;
+  const d = new Date(now), name = `よみこえ_原文まとめ_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.txt`;
+  return { text, file: new File([text], name, { type: 'text/plain' }), count: n, chars: items.reduce((a, it) => a + it.text.length, 0), missing };
+}
+$('#exportAllBtn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget, info = $('#exportAllInfo');
+  btn.disabled = true;
+  btn.textContent = 'つなげています…';
+  resetExportAll();
+  try {
+    exportAll = await buildAllRaw();
+    const { count, chars, missing, file } = exportAll;
+    info.textContent = count
+      ? `${count}本（${fmtNum(chars)}字・約${(file.size / 1048576).toFixed(1)}MB）をつなげました。下のボタンで保存できます。${missing.length ? `文章が見つからなかった履歴が${missing.length}件あります（${missing.slice(0, 5).join('、')}${missing.length > 5 ? ' ほか' : ''}）。` : ''}`
+      : 'つなげる文章がありませんでした。';
+    info.hidden = false;
+    $('#exportAllActs').hidden = !count;
+  } catch (err) {
+    info.textContent = 'つなげられませんでした。もう一度押してください。';
+    info.hidden = false;
+  }
+  btn.disabled = false;
+  btn.textContent = '貼った原文を全部つなげる';
+});
+$('#exportAllShare').addEventListener('click', async () => {
+  if (!exportAll) return;
+  const f = exportAll.file;
+  // iPhoneの「共有」から、ファイルに保存・AirDrop・メールなどに送れる。使えないときは普通にダウンロードする
+  if (navigator.canShare?.({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: f.name }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+  }
+  const a = make('a'), url = URL.createObjectURL(f);
+  a.href = url;
+  a.download = f.name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+});
+$('#exportAllCopy').addEventListener('click', (e) => { if (exportAll) copyRaw(e.currentTarget, exportAll.text); });
 
 $('#openHistory').addEventListener('click', () => showView('history'));
 $('#histBack').addEventListener('click', () => showView(lastView === 'read' && R.chunks.length ? 'read' : 'edit'));
