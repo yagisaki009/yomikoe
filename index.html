@@ -481,7 +481,14 @@ input, select, textarea {
       <h3>無料枠を使い切ったとき</h3>
       <label class="check"><input id="geminiFallback" type="checkbox">3.8 Flash Liteの声で続ける</label>
       <p class="hint">Geminiの無料枠は、声のモデルごとに別々に決まっています。いつもの3.8 Flashを使い切ったら、同じ声・同じ「読み方の雰囲気」のまま、軽い3.8 Flash Liteに切り替えて続けます。声の自然さは少し下がります。毎日16〜17時ごろに、3.8 Flashに戻ります。</p>
-      <label class="pick">先に使う声<select id="subFirst"><option value="ms">Microsoft（無料）</option><option value="el">ElevenLabs</option></select></label>
+      <label class="pick">先に使う声<select id="subFirst"><option value="xai">Grok（xAI）</option><option value="el">ElevenLabs</option><option value="ms">Microsoft（無料）</option></select></label>
+      <div id="xaiPart" class="sub-part">
+        <label class="check"><input id="xaiFallback" type="checkbox">Grokの声で続ける</label>
+        <div id="xaiBox" class="sub-box">
+          <p id="xaiState" class="usage"></p>
+          <p class="hint">Grokは、文字数に応じた有料です（100万字で15ドル。約2,000字の話で5円ほど）。1日の回数の上限はありません。キーと声は、上の「音声の種類」でGrokを選ぶと入れられます（入れたあと、Geminiに戻して大丈夫です）。たまに落ちるので、数回やり直し、それでもだめならその段落だけ次の声に移ります。この月の料金の目安に数えられ、料金の上限を超えると使いません。</p>
+        </div>
+      </div>
       <div id="elPart" class="sub-part">
         <label class="check"><input id="elFallback" type="checkbox">ElevenLabsの声で続ける</label>
         <div id="elBox" class="sub-box">
@@ -668,7 +675,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'xai', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -677,6 +684,8 @@ if (settings.msVoice.includes('DragonHD')) settings.msVoice = 'ja-JP-ShioriNeura
 const saveSettings = () => store.set('settings', settings);
 // 速さの初期値を1.0から0.9にした（2026-11-11）。前の初期値のまま（1.0）の端末は、一度だけ0.9にする。自分で選んだ速さは変えない
 if (!store.get('rate09', false)) { if (settings.rate === 1) { settings.rate = 0.9; saveSettings(); } store.set('rate09', true); }
+// Grokを予備の声に加えた（2026-11-16）。予備の順は「Grok→ElevenLabs」にして、Microsoftは外す（設定で戻せる）。一度だけ
+if (!store.get('xaiSub', false)) { settings.subFirst = 'xai'; settings.msFallback = false; saveSettings(); store.set('xaiSub', true); }
 const curVoice = () => (settings.engine === 'gemini' ? settings.geminiVoice : settings.voice);
 const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 // 動作確認のときだけ宛先を差し替えられるようにしてある
@@ -1234,15 +1243,39 @@ async function makeElPart(k, body, voice) {
   }
 }
 
+// Grokを予備の声に使うとき。たまに落ちるので、少し粘ってやり直し、それでもだめなら（その日は断らず）次の声へ回す
+async function requestXaiSub(text, signal) {
+  if (!overBudgetOk && costYen(usage()) > settings.budget) throw new TtsError('subquota', `今月の料金の上限（${fmtNum(settings.budget)}円）に達したので、Grokは使いません。`);
+  const temp = () => new TtsError('temp', 'Grokがうまくつながりませんでした。');
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try { res = await requestXai(text, settings.voice, signal); }
+    catch (e) {
+      if (signal?.aborted) throw e;
+      if (attempt < 4) { await sleep(1000 * 2 ** attempt); continue; }
+      throw temp();
+    }
+    if (res.ok) return res.arrayBuffer();
+    const raw = await res.text().catch(() => '');
+    if (res.status === 429 || res.status >= 500) {
+      if (attempt < 4) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
+      throw temp();
+    }
+    if (res.status === 401) throw new TtsError('auth', 'xAIのAPIキーが正しくありません。設定で入れ直してください。');
+    if (res.status === 402 || res.status === 403) throw new TtsError('auth', 'xAIのクレジットが足りないか、このキーでは読み上げが使えません。xAIのコンソールを確認してください。');
+    throw new TtsError('bad', `Grokの声を作れませんでした（${res.status}）。${errorDetail(raw).slice(0, 140)}`);
+  }
+}
 // 代わりの声は、設定で選んだほうから先に使う。使えなかったもの（今月の分を使い切った等）は、その日はもう試さない
 const SUBS = {
+  xai: { name: 'Grok', free: 0, cost: '料金がかかります', ready: () => settings.xaiFallback && !!settings.apiKey, voice: () => capitalize(settings.voice), make: (t, sig) => requestXaiSub(t, sig) },
   el: { name: 'ElevenLabs', free: 0, ready: () => settings.elFallback && !!settings.elKey && !!settings.elVoice, voice: elVoiceName, make: (t, sig) => requestEl(t, sig) },
   ms: { name: 'Microsoft', free: MS_FREE, ready: () => settings.msFallback && !!settings.msKey, voice: msVoiceName, make: (t, sig) => requestMs(t, settings.msVoice, sig) },
 };
-const subOrder = () => (settings.subFirst === 'el' ? ['el', 'ms'] : ['ms', 'el']);
+const subOrder = () => [settings.subFirst, ...['xai', 'el', 'ms'].filter((id) => id !== settings.subFirst)];
 function subsOut() { const o = store.get('subOut', null); return o && o.day === geminiDay() ? o.ids : []; }
 function markSubOut(id) { const ids = subsOut(); if (!ids.includes(id)) store.set('subOut', { day: geminiDay(), ids: [...ids, id] }); }
-const nextSub = () => subOrder().find((id) => SUBS[id].ready() && !subsOut().includes(id));
+const nextSub = (skip = []) => subOrder().find((id) => SUBS[id].ready() && !subsOut().includes(id) && !skip.includes(id));
 // 今月この端末で作った字数（Microsoftは無料の上限も添える。ElevenLabsは契約で上限が違うので添えない）
 const subUse = (id) => `今月${fmtNum(usage()[id])}字${SUBS[id].free ? ` / ${fmtNum(SUBS[id].free)}字まで無料` : ''}`;
 const subNames = (ids) => [...new Set(ids)].map((id) => SUBS[id]?.name || id).join('・');
@@ -1259,9 +1292,10 @@ function tellStandIn(id, why) {
     ? `${why}${sub.name}の声（${sub.voice()}）で続けます。`
     : `今日のGeminiの無料枠をすべて使い切ったので、${sub.name}の声（${sub.voice()}）で続けます。Geminiが戻る16〜17時ごろより後に、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。`);
 }
-async function makeStandIn(text, signal, key) {
-  let why = '', lastErr = null;
-  for (let id; (id = nextSub()); ) {
+// skip：この段落では使わない声（Grokが主役で落ちたときの Grok 自身や、つながらなかった声）。why：最初に伝える理由。main：もとの声のサービス
+async function makeStandIn(text, signal, key, skip = [], why = '', main = 'gemini') {
+  let lastErr = null;
+  for (let id; (id = nextSub(skip)); ) {
     const n = text.length;
     addUsage(id, n);
     try {
@@ -1276,13 +1310,15 @@ async function makeStandIn(text, signal, key) {
       addUsage(id, -n);
       // 通信できないときや中止したときは、次の声でも同じなので、そのまま伝える
       if (e.name === 'AbortError' || e.kind === 'net') throw e;
-      markSubOut(id);
+      if (e.kind === 'temp') skip.push(id); // 一時的な不調は、その日の分をあきらめず、この段落だけ次の声へ
+      else markSubOut(id);
       why = e.message;
       lastErr = e;
     }
   }
   // 無料分を使い切った以外の理由（キーの間違い等）なら、その理由を伝える
-  throw lastErr && lastErr.kind !== 'subquota' ? lastErr : allOutError();
+  if (lastErr && lastErr.kind !== 'subquota') throw lastErr;
+  throw main === 'xai' ? new TtsError('temp', 'Grokがうまくつながらず、予備の声も、今日はもう使えません。') : allOutError();
 }
 
 // 読み上げと書き出しが同じ段落を同時に頼んだときは、先に頼んだほうの出来上がりを使い、Geminiに二重に送らない
@@ -1295,9 +1331,13 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
     if (hit && hit.buf) return toBlob(hit.buf);
     try { return await makeSpeech(text, signal, p, key); }
     catch (e) {
-      if (e.kind !== 'quota' || !standIn) throw e;
-      if (nextSub()) return makeStandIn(text, signal, key);
-      throw subOrder().some((id) => SUBS[id].ready()) ? allOutError() : e;
+      // Geminiの枠が切れたとき、またはGrokが落ちたときは、予備の声で続ける
+      const grokDown = p.engine === 'xai' && (e.kind === 'net' || e.kind === 'temp');
+      if ((e.kind !== 'quota' && !grokDown) || !standIn) throw e;
+      if (grokDown && e.kind === 'net' && navigator.onLine === false) throw e; // 本当に圏外なら、次の声でも同じ
+      const skip = grokDown ? ['xai'] : [];
+      if (nextSub(skip)) return makeStandIn(text, signal, key, skip, grokDown ? 'Grokがうまくつながらないため、' : '', p.engine);
+      throw grokDown || !subOrder().some((id) => SUBS[id].ready()) ? e : allOutError();
     }
   })();
   making.set(key, job);
@@ -1318,7 +1358,7 @@ async function makeSpeech(text, signal, p, key) {
         res = await (engine === 'gemini' ? requestGemini(text, voice, p.style, model, signal) : requestXai(text, voice, signal));
       } catch (e) {
         if (signal?.aborted) throw e;
-        if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
+        if (attempt < (engine === 'xai' ? 4 : 3)) { await sleep(1000 * 2 ** attempt); continue; }
         throw new TtsError('net', '通信できませんでした。インターネットにつながっているか確かめてください。');
       }
       if (res.ok) {
@@ -1355,7 +1395,8 @@ async function makeSpeech(text, signal, p, key) {
         continue;
       }
       // 無料枠は1分あたりの回数にも上限があるので、言われた時間だけ待ってやり直す
-      if ((res.status === 429 || res.status >= 500) && attempt < (engine === 'gemini' ? 6 : 3)) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
+      if ((res.status === 429 || res.status >= 500) && attempt < (engine === 'gemini' ? 6 : 4)) { await sleep(Math.max(retryDelayMs(raw), 1500 * 2 ** attempt)); continue; }
+      if (engine === 'xai' && (res.status === 429 || res.status >= 500)) throw new TtsError('temp', `Grokがうまくつながりませんでした（${res.status}）。`);
       if (engine === 'gemini') {
         // 無料枠のキーなら429で止まる。402は、プロジェクトにお支払い情報が付いていて、前払いの残高が0のとき
         if (res.status === 402) throw new TtsError('auth', 'このAPIキーのGoogleのプロジェクトは「有料（前払い）」の設定になっていて、前払いの残高が0のため、Googleが受け付けませんでした。無料で使うには、Google Cloudの「お支払い」で、このプロジェクトの課金を無効にしてください（同じキーのまま無料枠に戻ります）。');
@@ -1625,7 +1666,7 @@ async function renderEstimate() {
   const skipped = filter ? `<br>台本なので、題名と本文の<b>${fmtNum(readable.length)}</b>字だけを読みます（要約・概要欄などは飛ばします）` : '';
   const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
-    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && nextSub() ? `${SUBS[nextSub()].name}の声で作る分 約<b>${fmtNum(fresh)}</b>字（${SUBS[nextSub()].free ? '無料' : 'クレジットを使います'}）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
+    ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && nextSub() ? `${SUBS[nextSub()].name}の声で作る分 約<b>${fmtNum(fresh)}</b>字（${SUBS[nextSub()].free ? '無料' : SUBS[nextSub()].cost || 'クレジットを使います'}）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
   $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
@@ -2093,7 +2134,7 @@ function handleError(e) {
   } else if (e.kind === 'quota' && !settings.geminiFallback) {
     showNotice(e.message, `${MODEL_NAME[GEMINI_MODELS[1]]}で続ける`, () => { settings.geminiFallback = true; saveSettings(); hideNotice(); resume(); });
   } else if (e.kind === 'quota' && !subOrder().some((id) => SUBS[id].ready())) {
-    showNotice(`${e.message}設定でElevenLabsかMicrosoftのキーを入れると、続きも無料で読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
+    showNotice(`${e.message}設定でGrokかElevenLabsかMicrosoftのキーを入れると、続きも読めます。`, '設定を開く', () => { hideNotice(); openSettings(); });
   } else if (e.kind === 'budget') {
     showNotice(`${e.message}上限は設定で変えられます。`, '今回は続ける', () => { overBudgetOk = true; hideNotice(); resume(); });
   } else {
@@ -2304,6 +2345,9 @@ function openSettings(msg) {
   $('#msMsg').hidden = true;
   fillMs();
   $('#subFirst').value = settings.subFirst;
+  $('#xaiFallback').checked = settings.xaiFallback;
+  $('#xaiBox').hidden = !settings.xaiFallback;
+  renderXaiState();
   renderSubOrder();
   $('#elFallback').checked = settings.elFallback;
   $('#elKey').value = settings.elKey;
@@ -2338,6 +2382,7 @@ setDlg.addEventListener('close', () => {
 $('#apiKey').addEventListener('input', (e) => {
   settings.apiKey = e.target.value.trim();
   saveSettings();
+  renderXaiState();
   voicesLoaded = false;
   $('#setMsg').hidden = true;
 });
@@ -2465,6 +2510,8 @@ async function loadElVoices() {
 }
 // 設定画面でも、先に使う声の欄を上に並べる
 function renderSubOrder() { subOrder().forEach((id, k) => { $(`#${id}Part`).style.order = String(k + 1); }); }
+function renderXaiState() { $('#xaiState').textContent = settings.apiKey ? 'xAIのキー：入っています' : 'xAIのキー：まだ入っていません'; }
+$('#xaiFallback').addEventListener('change', (e) => { settings.xaiFallback = e.target.checked; saveSettings(); $('#xaiBox').hidden = !e.target.checked; renderUsage(); });
 $('#subFirst').addEventListener('change', (e) => { settings.subFirst = e.target.value; saveSettings(); renderSubOrder(); renderUsage(); });
 $('#elFallback').addEventListener('change', (e) => { settings.elFallback = e.target.checked; saveSettings(); $('#elBox').hidden = !e.target.checked; renderUsage(); });
 $('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; elHistory = null; $('#elMsg').hidden = true; renderUsage(); });
@@ -2521,7 +2568,7 @@ function renderUsage() {
   const u = usage(), y = costYen(u);
   const model = geminiModel(), sub = !model && nextSub();
   const now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : sub ? `・今は${SUBS[sub].name}の声` : '';
-  const subs = subOrder().filter((id) => (id === 'el' ? settings.elKey : settings.msKey) || u[id])
+  const subs = subOrder().filter((id) => id !== 'xai' && ((id === 'el' ? settings.elKey : settings.msKey) || u[id]))
     .map((id) => `${SUBS[id].name} ${subUse(id)}${id === 'el' && elSub?.limit ? `・${elCreditsText()}` : ''}<br>`).join('');
   t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
