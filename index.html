@@ -153,6 +153,20 @@ body.has-player main { padding-bottom: 190px; }
 .q-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .queue-paused { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .queue-paused .msg { flex: 1; }
+.q-sum { margin: 0 0 10px; }
+.q-sum .usage { margin: 0 0 6px; font-size: 14px; }
+.q-sum .meter, .q-body .meter { height: 8px; border-radius: 4px; }
+.q-body .meter { margin-top: 6px; }
+.q-body .meter > div, .q-sum .meter > div { transition: width .4s ease; }
+.q-done { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.q-done li { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+.q-done .ok-mark { flex: none; color: var(--accent); font-weight: 700; }
+.q-done .q-title { flex: 1; min-width: 0; font-weight: 400; }
+.q-done .q-meta { flex: none; }
+.q-done-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 0 6px; }
+.q-done-head .label { margin: 0; }
+.q-done-head .btn { flex: none; white-space: nowrap; }
+.queue > .hint { margin-top: 14px; }
 
 /* 目次 */
 .toc { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
@@ -350,13 +364,21 @@ input, select, textarea {
       <button type="button" id="startBtn" class="btn primary">読み上げる</button>
     </div>
     <div id="queueBox" class="queue" hidden>
-      <p class="label">作る順番待ち</p>
+      <p id="queueLabel" class="label">作る順番待ち</p>
       <div id="queuePaused" class="queue-paused" hidden>
         <p id="queueMsg" class="msg"></p>
         <button type="button" id="queueResume" class="btn ghost small">続ける</button>
       </div>
+      <div id="queueSum" class="q-sum" hidden>
+        <p id="queueSumText" class="usage" aria-live="polite"></p>
+        <div id="queueSumMeter" class="meter" role="progressbar" aria-label="順番待ち全体の進み" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="queueSumFill"></div></div>
+      </div>
       <ol id="queueList" class="queue-list"></ol>
-      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。入れた話は、聞いている話が終わると、入れた順に続けて流れます（履歴からも聞けます）。</p>
+      <div id="queueDoneBox" hidden>
+        <div class="q-done-head"><p class="label">できあがった話</p><button type="button" id="queueDoneClear" class="btn ghost small">片づける</button></div>
+        <ul id="queueDone" class="q-done"></ul>
+      </div>
+      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。入れた話は、聞いている話が終わると、入れた順に続けて流れます（履歴からも聞けます）。作っている間は、よみこえを開いたままにしてください（閉じると止まります。次に開いたとき、残りだけを続きから作ります）。</p>
     </div>
   </section>
 
@@ -2902,7 +2924,19 @@ $('#histList').addEventListener('click', async (e) => {
 /* ---------- 端末に保存（電波がなくても聞けるように） ---------- */
 // 保存を頼まれた履歴は、1件ずつ順番に、まだ作っていない段落を作る。待ちの列はアプリを閉じても覚えておき、次に開いたときに続ける
 // paused：作れなかった理由（その話を先頭に残して、列を止めている）
-const saver = { queue: [], job: null, paused: '', names: new Map() };
+// done：できあがった話（アプリを閉じても、新しい5話ぶんほど覚えておく）／batchDone：いまの順番待ちで、保存し終えた話の数（全体の棒に使う）
+const saver = { queue: [], job: null, paused: '', names: new Map(), done: store.get('saveDone', []), batchDone: 0 };
+function noteDone(job) {
+  saver.done = [{ id: job.id, title: job.title, n: job.n, at: Date.now() }, ...saver.done.filter((d) => d.id !== job.id)].slice(0, 8);
+  store.set('saveDone', saver.done);
+}
+const hmOf = (ts) => { const d = new Date(ts); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const agoOf = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}秒前` : `${Math.floor(s / 60)}分前`; };
+// いま作っている話の様子。「最後に段落ができてから」の時間も出して、止まっていないと分かるようにする
+function jobMeta(job) {
+  const idle = Date.now() - job.last, p = job.n ? Math.floor((job.done / job.n) * 100) : 100;
+  return `作っています… ${job.done}/${job.n}段落（${p}%）・最後に進んだのは${agoOf(idle)}${idle > 45000 ? '。時間がかかっています（混み合っているときは、自動でやり直しています）' : ''}`;
+}
 const saveQueue = () => store.set('saveQueue', [saver.job?.id, ...saver.queue].filter(Boolean));
 // 止まったことも覚えておき、同じ日にアプリを開き直したときは、「続ける」を押すまで待つ
 function setPaused(msg) {
@@ -2916,6 +2950,7 @@ function docChunks(doc, text) {
 function saveDoc(id, title) {
   if (title) saver.names.set(id, title);
   if (saver.job?.id !== id && !saver.queue.includes(id)) saver.queue.push(id);
+  if (saver.done.some((d) => d.id === id)) { saver.done = saver.done.filter((d) => d.id !== id); store.set('saveDone', saver.done); }
   saveQueue();
   navigator.storage?.persist?.().catch(() => {});
   resumeSaver();
@@ -2950,7 +2985,7 @@ async function saverLoop() {
     saver.queue.shift();
     if (!doc || typeof text !== 'string') { saveQueue(); continue; }
     const todo = docChunks(doc, text).filter((c) => !have.has(keyFor(c.speech, doc.profile)));
-    const job = saver.job = { id, title: doc.title, n: doc.n, done: doc.n - todo.length, ctrl: new AbortController() };
+    const job = saver.job = { id, title: doc.title, n: doc.n, done: doc.n - todo.length, last: Date.now(), ctrl: new AbortController() };
     saver.names.set(id, doc.title);
     saveQueue();
     renderSaving();
@@ -2960,6 +2995,7 @@ async function saverLoop() {
         if (w > 0 && othersBusy()) { await sleep(1000); continue; }
         await synth(todo[next++].speech, job.ctrl.signal, doc.profile);
         job.done++;
+        job.last = Date.now();
         renderSaving();
       }
     };
@@ -2982,8 +3018,10 @@ async function saverLoop() {
     }
     saver.job = null;
     saveQueue();
+    if (!job.ctrl.signal.aborted) { saver.batchDone++; noteDone(job); }
     if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。`, '履歴を開く', () => { hideNotice(); showView('history'); });
   }
+  if (!saver.queue.length && !saver.job) saver.batchDone = 0;
   renderSaving();
 }
 let histTimer = 0;
@@ -3002,24 +3040,54 @@ async function renderQueue() {
   const token = ++queueToken, ids = [saver.job?.id, ...saver.queue].filter(Boolean);
   for (const id of ids) if (!saver.names.has(id)) saver.names.set(id, (await docGet(id))?.title || '（無題）');
   if (token !== queueToken) return;
-  $('#queueBox').hidden = !ids.length;
+  $('#queueBox').hidden = !ids.length && !saver.done.length;
+  $('#queueLabel').hidden = !ids.length;
   $('#queuePaused').hidden = !saver.paused;
   $('#queueMsg').textContent = saver.paused ? `止まっています。${saver.paused}` : '';
+  // 2話以上あるときは、全部の進みを1本の棒で（保存し終えた話＋いま作っている話の途中まで）
+  const total = saver.batchDone + ids.length, frac = total ? (saver.batchDone + (saver.job?.n ? saver.job.done / saver.job.n : 0)) / total : 0, pct = Math.min(100, Math.floor(frac * 100));
+  $('#queueSum').hidden = total < 2 || !ids.length;
+  $('#queueSumText').textContent = `全部で${total}話のうち、${saver.batchDone}話を保存できました（${pct}%）`;
+  $('#queueSumFill').style.width = `${(frac * 100).toFixed(1)}%`;
+  $('#queueSumMeter').setAttribute('aria-valuenow', String(pct));
   const list = $('#queueList');
   list.textContent = '';
   for (const id of ids) {
     const job = saver.job?.id === id ? saver.job : null, q = saver.queue.indexOf(id);
     const li = make('li', job ? 'now' : '');
     const body = make('div', 'q-body');
-    const meta = job ? `作っています… ${job.done}/${job.n}段落` : saver.paused && q === 0 ? '止まっています' : `順番待ち・${q + 1}番目`;
-    body.append(make('span', 'q-title', saver.names.get(id)), make('span', 'q-meta', meta));
+    const meta = job ? jobMeta(job) : saver.paused && q === 0 ? '止まっています' : `順番待ち・${q + 1}番目`;
+    body.append(make('span', 'q-title', saver.names.get(id)), make('span', job ? 'q-meta q-live' : 'q-meta', meta));
+    if (job) {
+      const jp = job.n ? Math.floor((job.done / job.n) * 100) : 100, m = make('div', 'meter'), f = make('div');
+      m.setAttribute('role', 'progressbar');
+      m.setAttribute('aria-label', `「${saver.names.get(id)}」を作る進み`);
+      m.setAttribute('aria-valuemin', '0');
+      m.setAttribute('aria-valuemax', '100');
+      m.setAttribute('aria-valuenow', String(jp));
+      f.style.width = `${job.n ? (job.done / job.n) * 100 : 100}%`;
+      m.append(f);
+      body.append(m);
+    }
     const b = make('button', 'btn ghost small', 'やめる');
     b.type = 'button';
     b.dataset.id = id;
     li.append(body, b);
     list.append(li);
   }
+  // できあがった話（最近のもの）。順番待ちが空になっても、「ちゃんと保存できた」と分かるよう残す
+  const dl = $('#queueDone');
+  dl.textContent = '';
+  for (const d of saver.done) {
+    const li = make('li');
+    li.append(make('span', 'ok-mark', '✓'), make('span', 'q-title', d.title), make('span', 'q-meta', `${d.n}段落・${hmOf(d.at)}に保存`));
+    dl.append(li);
+  }
+  $('#queueDoneBox').hidden = !saver.done.length;
 }
+// 作っている間は1秒ごとに、「最後に進んだのは○秒前」を数え直す（動いていることが見えるように）
+setInterval(() => { if (!saver.job || saver.paused) return; const m = document.querySelector('#queueList .q-live'); if (m) m.textContent = jobMeta(saver.job); }, 1000);
+$('#queueDoneClear').addEventListener('click', () => { saver.done = []; store.set('saveDone', []); renderQueue(); });
 $('#queueList').addEventListener('click', (e) => { const id = e.target.closest('[data-id]')?.dataset.id; if (id) stopSaving(id); });
 $('#queueResume').addEventListener('click', resumeSaver);
 // 貼り付けた話を、聞いている話や書き出しはそのままで履歴に入れ、待ちの列の最後に足す
@@ -3523,6 +3591,7 @@ expDlg.addEventListener('close', exportClosed);
 /* ---------- 起動 ---------- */
 // 前に開いていたときの待ちの列を、続きから作る
 saver.queue = store.get('saveQueue', []);
+if (saver.done.length) renderQueue();
 if (saver.queue.length) {
   const paused = store.get('savePaused', null);
   if (paused?.day === geminiDay()) saver.paused = paused.msg;
