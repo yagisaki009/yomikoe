@@ -139,6 +139,9 @@ body.has-player main { padding-bottom: 190px; }
 .hist-export { margin: 0 0 14px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
 .hist-export .hint { margin: 8px 0 0; }
 .hist-export .hist-actions { justify-content: flex-start; padding: 8px 0 0; }
+.hist-export .exp-bar { margin: 10px 0 0; }
+.hist-export .exp-bar .meter { height: 8px; border-radius: 4px; }
+.hist-export .exp-bar .usage { margin: 6px 0 0; font-size: 13px; }
 
 /* 作る順番待ち */
 .queue { margin-top: 20px; }
@@ -384,6 +387,10 @@ input, select, textarea {
     <div class="hist-export">
       <button type="button" id="exportAllBtn" class="btn ghost small">貼った原文を全部つなげる</button>
       <p class="hint">履歴に残っている文章を、貼ったままの形（要約やあとがきも含めて）で、1つのファイルにつなげます。同じ文章を別の声で読んだ分は、1本にまとめます。</p>
+      <div id="exportAllBar" class="exp-bar" hidden>
+        <div id="exportAllMeter" class="meter" role="progressbar" aria-label="つなげている進み" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="exportAllFill"></div></div>
+        <p id="exportAllPct" class="usage" aria-live="polite"></p>
+      </div>
       <p id="exportAllInfo" class="hint" hidden></p>
       <div id="exportAllActs" class="hist-actions" hidden>
         <button type="button" id="exportAllShare" class="btn ghost small">ファイルにして保存・送る</button>
@@ -2746,11 +2753,22 @@ async function renderHistory() {
 // 履歴にある文章を、貼ったままの形で、古い順に1つのファイルへつなげる（同じ文章は1本にまとめる）
 const fmtFull = (ts) => { const d = new Date(ts); return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
 let exportAll = null;
-function resetExportAll() { exportAll = null; $('#exportAllActs').hidden = true; $('#exportAllInfo').hidden = true; }
-async function buildAllRaw() {
+function resetExportAll() { exportAll = null; $('#exportAllActs').hidden = true; $('#exportAllInfo').hidden = true; $('#exportAllBar').hidden = true; }
+// 進みの棒。done本まで終わった／全部でtotal本。phase==='join' は、読み込みが終わって、ファイルにまとめている間
+function paintExportBar(done, total, phase) {
+  const r = total ? done / total : 1, p = Math.min(100, Math.floor(r * 100));
+  $('#exportAllFill').style.width = `${(r * 100).toFixed(1)}%`;
+  $('#exportAllMeter').setAttribute('aria-valuenow', String(p));
+  $('#exportAllPct').textContent = phase === 'join' ? `${fmtNum(total)}本を読み終わりました。ファイルにまとめています…` : `${fmtNum(done)}／${fmtNum(total)}本まで終わりました（${p}%）`;
+}
+const nextTick = () => new Promise((r) => setTimeout(r, 0));
+async function buildAllRaw(onProgress) {
   const docs = (await docAll()).sort((a, b) => a.createdAt - b.createdAt);
-  const items = [], seen = new Set(), missing = [];
-  for (const d of docs) {
+  const items = [], seen = new Set(), missing = [], total = docs.length;
+  let lastPaint = 0;
+  for (const [i, d] of docs.entries()) {
+    // 画面が止まって見えないよう、0.1秒ごとくらいに棒を進めて、画面を描き直させる
+    if (onProgress && performance.now() - lastPaint > 100) { lastPaint = performance.now(); onProgress(i, total); await nextTick(); }
     let t = rawCache.get(d.id);
     if (typeof t !== 'string') t = await textGet(d.id).catch(() => null);
     if (typeof t !== 'string' || !t.trim()) { missing.push(d.title || '（無題）'); continue; }
@@ -2758,7 +2776,8 @@ async function buildAllRaw() {
     seen.add(t);
     items.push({ title: d.title || '（無題）', at: d.createdAt, text: t });
   }
-  const mark = '◆◆◆◆◆ 原文まとめ ◆◆◆◆◆', n = items.length, now = Date.now();
+  if (onProgress) { onProgress(total, total, 'join'); await nextTick(); }
+  const mark ='◆◆◆◆◆ 原文まとめ ◆◆◆◆◆', n = items.length, now = Date.now();
   const head = [`${mark} よみこえの履歴（${fmtFull(now)}に書き出し）`, `全${n}本。貼った文章を、削らずそのまま並べています。見出しと目次は、つなぐときに足したものです。`, '', ...items.map((it, i) => `[${i + 1}] ${it.title}`), '', ''].join('\n');
   const body = items.map((it, i) => `${mark} [${i + 1}／${n}] ${it.title} ・ ${fmtFull(it.at)}に読み上げ\n${it.text.endsWith('\n') ? it.text : `${it.text}\n`}`).join('\n');
   const text = `${head}${body}`;
@@ -2770,8 +2789,12 @@ $('#exportAllBtn').addEventListener('click', async (e) => {
   btn.disabled = true;
   btn.textContent = 'つなげています…';
   resetExportAll();
+  paintExportBar(0, 1);
+  $('#exportAllPct').textContent = '履歴を数えています…';
+  $('#exportAllBar').hidden = false;
   try {
-    exportAll = await buildAllRaw();
+    exportAll = await buildAllRaw(paintExportBar);
+    $('#exportAllBar').hidden = true;
     const { count, chars, missing, file } = exportAll;
     info.textContent = count
       ? `${count}本（${fmtNum(chars)}字・約${(file.size / 1048576).toFixed(1)}MB）をつなげました。下のボタンで保存できます。${missing.length ? `文章が見つからなかった履歴が${missing.length}件あります（${missing.slice(0, 5).join('、')}${missing.length > 5 ? ' ほか' : ''}）。` : ''}`
@@ -2779,6 +2802,7 @@ $('#exportAllBtn').addEventListener('click', async (e) => {
     info.hidden = false;
     $('#exportAllActs').hidden = !count;
   } catch (err) {
+    $('#exportAllBar').hidden = true;
     info.textContent = 'つなげられませんでした。もう一度押してください。';
     info.hidden = false;
   }
