@@ -481,7 +481,7 @@ input, select, textarea {
       <h3>無料枠を使い切ったとき</h3>
       <label class="check"><input id="geminiFallback" type="checkbox">3.8 Flash Liteの声で続ける</label>
       <p class="hint">Geminiの無料枠は、声のモデルごとに別々に決まっています。いつもの3.8 Flashを使い切ったら、同じ声・同じ「読み方の雰囲気」のまま、軽い3.8 Flash Liteに切り替えて続けます。声の自然さは少し下がります。毎日16〜17時ごろに、3.8 Flashに戻ります。</p>
-      <label class="pick">先に使う声<select id="subFirst"><option value="xai">Grok（xAI）</option><option value="el">ElevenLabs</option><option value="ms">Microsoft（無料）</option></select></label>
+      <label class="pick">先に使う声<select id="subFirst"><option value="ms">Microsoft（無料）</option><option value="xai">Grok（xAI）</option><option value="el">ElevenLabs</option></select></label>
       <div id="xaiPart" class="sub-part">
         <label class="check"><input id="xaiFallback" type="checkbox">Grokの声で続ける</label>
         <div id="xaiBox" class="sub-box">
@@ -675,7 +675,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'xai', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -684,8 +684,9 @@ if (settings.msVoice.includes('DragonHD')) settings.msVoice = 'ja-JP-ShioriNeura
 const saveSettings = () => store.set('settings', settings);
 // 速さの初期値を1.0から0.9にした（2026-11-11）。前の初期値のまま（1.0）の端末は、一度だけ0.9にする。自分で選んだ速さは変えない
 if (!store.get('rate09', false)) { if (settings.rate === 1) { settings.rate = 0.9; saveSettings(); } store.set('rate09', true); }
-// Grokを予備の声に加えた（2026-11-16）。予備の順は「Grok→ElevenLabs」にして、Microsoftは外す（設定で戻せる）。一度だけ
-if (!store.get('xaiSub', false)) { settings.subFirst = 'xai'; settings.msFallback = false; saveSettings(); store.set('xaiSub', true); }
+// Grokを予備の声に加えた（2026-11-16）。予備の順は「Microsoft（無料）→Grok→ElevenLabs」で、Microsoftもオンにする（本人の希望）。
+// 一度だけ。いったん「Grokが先頭・Microsoftを外す」にした端末も、これで元に戻る
+if (!store.get('msFirst', false)) { settings.subFirst = 'ms'; settings.msFallback = true; saveSettings(); store.set('msFirst', true); }
 const curVoice = () => (settings.engine === 'gemini' ? settings.geminiVoice : settings.voice);
 const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 // 動作確認のときだけ宛先を差し替えられるようにしてある
