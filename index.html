@@ -1435,6 +1435,8 @@ const subOrder = () => [settings.subFirst, ...['ms', 'xai', 'el'].filter((id) =>
 // 使えなかった予備の声は、その理由もいっしょに覚えておき、画面に出す（2026-11-24）。
 // 理由を覚えていなかった前の版の印は、一度だけ消して試し直す（そこで本当の理由が分かる）
 { const o = store.get('subOut', null); if (o && !o.why) store.set('subOut', null); }
+// 前の版の、理由があいまいな「声が見つかりません」（中身はモデルが合わない等だったかもしれない）の印も、一度だけ消して試し直す
+{ const o = store.get('subOut', null); if (o && o.why && o.why.el === 'ElevenLabsの声が見つかりません。設定で選び直してください。') store.set('subOut', null); }
 function subsOut() { const o = store.get('subOut', null); return o && o.day === geminiDay() ? o.ids : []; }
 function subWhy(id) { const o = store.get('subOut', null); return (o && o.day === geminiDay() && o.why && o.why[id]) || ''; }
 function markSubOut(id, why = '') {
@@ -1443,6 +1445,16 @@ function markSubOut(id, why = '') {
   const o = store.get('subOut', null), old = o && o.day === geminiDay() && o.why ? o.why : {};
   store.set('subOut', { day: geminiDay(), ids: [...ids, id], why: { ...old, [id]: why } });
   plogSafe(`予備の${SUBS[id].name}は今日はもう使わない：${why || '理由不明'}`);
+}
+// 設定を直したときや、試聴で鳴ったときは、「今日は使わない」の印を消して、また使う（2026-11-24。
+// 印が残ったままだと、モデルを戻しても試聴は鳴るのに、本番では使われなかった）
+function clearSubOut(id) {
+  const o = store.get('subOut', null);
+  if (!o || !o.ids.includes(id)) return;
+  const why = { ...(o.why || {}) };
+  delete why[id];
+  store.set('subOut', { ...o, ids: o.ids.filter((x) => x !== id), why });
+  plogSafe(`予備の${SUBS[id].name}の「今日は使わない」を消した`);
 }
 // 予備の声が使えない理由（使い切った・断られた・キーが無い・オフ）
 function subState(id) {
@@ -2692,7 +2704,7 @@ $('#apiKey').addEventListener('input', (e) => {
   voicesLoaded = false;
   $('#setMsg').hidden = true;
 });
-$('#apiKey').addEventListener('change', loadVoices);
+$('#apiKey').addEventListener('change', () => { clearSubOut('xai'); loadVoices(); });
 $('#geminiKey').addEventListener('input', (e) => {
   settings.geminiKey = e.target.value.trim();
   saveSettings();
@@ -2750,8 +2762,8 @@ function fillMs() {
   sel.value = settings.msVoice;
 }
 $('#msFallback').addEventListener('change', (e) => { settings.msFallback = e.target.checked; saveSettings(); $('#msBox').hidden = !e.target.checked; renderUsage(); });
-$('#msKey').addEventListener('input', (e) => { settings.msKey = e.target.value.trim(); saveSettings(); $('#msMsg').hidden = true; renderUsage(); });
-$('#msRegion').addEventListener('change', (e) => { settings.msRegion = e.target.value; saveSettings(); $('#msMsg').hidden = true; });
+$('#msKey').addEventListener('input', (e) => { settings.msKey = e.target.value.trim(); saveSettings(); clearSubOut('ms'); $('#msMsg').hidden = true; renderUsage(); });
+$('#msRegion').addEventListener('change', (e) => { settings.msRegion = e.target.value; saveSettings(); clearSubOut('ms'); $('#msMsg').hidden = true; });
 $('#msVoice').addEventListener('change', (e) => { settings.msVoice = e.target.value; saveSettings(); });
 $('#msCalm').addEventListener('change', (e) => { settings.msCalm = e.target.checked; saveSettings(); });
 // 代わりの声の試聴（Geminiの回数は使わない）
@@ -2765,6 +2777,7 @@ async function previewSub(id) {
   try {
     const buf = await SUBS[id].make(PREVIEW_TEXT);
     addUsage(id, PREVIEW_TEXT.length);
+    clearSubOut(id);
     previewAudio.src = URL.createObjectURL(toBlob(buf));
     await previewAudio.play();
   } catch (e) {
@@ -2822,7 +2835,7 @@ $('#xaiFallback').addEventListener('change', (e) => { settings.xaiFallback = e.t
 $('#subFirst').addEventListener('change', (e) => { settings.subFirst = e.target.value; saveSettings(); renderSubOrder(); renderUsage(); });
 $('#elFallback').addEventListener('change', (e) => { settings.elFallback = e.target.checked; saveSettings(); $('#elBox').hidden = !e.target.checked; renderUsage(); });
 $('#elKey').addEventListener('input', (e) => { settings.elKey = e.target.value.trim(); saveSettings(); elLoaded = false; elHistory = null; $('#elMsg').hidden = true; renderUsage(); });
-$('#elKey').addEventListener('change', () => { loadElVoices(); loadElCredits(); });
+$('#elKey').addEventListener('change', () => { clearSubOut('el'); loadElVoices(); loadElCredits(); });
 // ElevenLabsの契約の残り（キーに「User」の読み取りの許可があるときだけ読める）
 let elSub = null;
 async function loadElCredits() {
@@ -2858,8 +2871,8 @@ function renderElCredits() {
   el.hidden = !lines.length;
   el.innerHTML = lines.map(escXml).join('<br>');
 }
-$('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.value; saveSettings(); });
-$('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); });
+$('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.value; saveSettings(); clearSubOut('el'); });
+$('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); clearSubOut('el'); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
   if (!confirm('保存した音声と履歴（ブックマークも）をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
