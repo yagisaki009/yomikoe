@@ -621,6 +621,15 @@ input, select, textarea {
       </div>
       <p class="hint">Geminiの音声は、届いた後でMP3に圧縮して保存します（1時間で約29MB。上の時間はGeminiで聞いた場合の目安です）。上限を超えると、古い音声から消えます。iPhoneの空き容量が少ないときは、上限を小さめにしてください。</p>
     </section>
+
+    <section class="group">
+      <h3>再生の記録</h3>
+      <div class="field-row">
+        <p id="plogCount" class="usage"></p>
+        <button type="button" id="plogCopy" class="btn ghost small">記録をコピー</button>
+      </div>
+      <p class="hint">再生が止まったときの様子（段落の切りかわり・待った時間・作れなかった理由・画面を消していたか など）を、この端末に残しています。止まったら、ここでコピーして、Claudeとのチャットに貼り付けてください。文章の中身やキーは残していません。</p>
+    </section>
   </div>
 </dialog>
 
@@ -1335,7 +1344,7 @@ async function makeStandIn(text, signal, key, skip = [], why = '', main = 'gemin
       subKeys.set(key, id);
       saveSubKeys();
       cachePut(key, buf);
-      return toBlob(buf);
+      return Object.assign(toBlob(buf), { via: `${SUBS[id].name}（予備）` });
     } catch (e) {
       addUsage(id, -n);
       // 通信できないときや中止したときは、次の声でも同じなので、そのまま伝える
@@ -1358,7 +1367,7 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
   if (other) { try { return await other; } catch { /* 先のほうが失敗・中止したら、こちらで作る */ } }
   const job = (async () => {
     const hit = await cacheGet(key);
-    if (hit && hit.buf) return toBlob(hit.buf);
+    if (hit && hit.buf) return Object.assign(toBlob(hit.buf), { via: '保存してあった音声' });
     try { return await makeSpeech(text, signal, p, key); }
     catch (e) {
       // Geminiの枠が切れたとき、またはGrokが落ちたときは、予備の声で続ける
@@ -1405,7 +1414,7 @@ async function makeSpeech(text, signal, p, key) {
         }
         if (subKeys.delete(key)) saveSubKeys();
         cachePut(key, buf);
-        return toBlob(buf);
+        return Object.assign(toBlob(buf), { via: engine === 'gemini' ? `Gemini ${MODEL_NAME[model] || model}` : 'Grok' });
       }
       const raw = await res.text().catch(() => '');
       const detail = errorDetail(raw);
@@ -1744,8 +1753,28 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------- 再生 ---------- */
 const audio = $('#audio');
-const R = { chunks: [], chunkKeys: [], saved: new Set(), prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, docId: '', episodes: [], curEp: -1, flash: null };
-let silentUrl = null;
+// tries：段落ごとの、知らせずにやり直した回数／cool：先読みで失敗した段落を、次に作り直してよい時刻／waitAt：段落ができるのを待ち始めた時刻
+const R = { chunks: [], chunkKeys: [], saved: new Set(), prefix: [], total: 0, idx: 0, loads: new Map(), urls: new Map(), ctrl: null, token: 0, wantPlay: false, waiting: false, halted: false, finished: false, swapping: false, hushing: false, tries: new Map(), cool: new Map(), waitAt: 0, title: '', textHash: '', sig: '', savedAt: 0, text: '', profile: null, dict: '', filter: null, doc: null, docId: '', episodes: [], curEp: -1, flash: null };
+let silentUrl = null, waitUrl = null;
+
+/* ---------- 再生の記録（止まったときに、原因を調べるため） ---------- */
+// 段落の切りかわり・待った時間・失敗・画面を消していたか などを、この端末に400行まで残す。文章の中身は残さない
+const PLOG_MAX = 400;
+let plogBuf = store.get('playLog', []);
+const hms = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`; };
+const visMark = () => (document.visibilityState === 'hidden' ? '［画面は裏］' : '');
+function plog(msg) {
+  plogBuf.push(`${hms(Date.now())} ${msg}`);
+  if (plogBuf.length > PLOG_MAX) plogBuf = plogBuf.slice(-PLOG_MAX);
+  store.set('playLog', plogBuf); // アプリが急に止められても残るよう、すぐ書く
+}
+// 再生中は15秒ごとに「生きている」印を残す。次に開いたとき、再生中のまま終わっていたら記録に書く
+let aliveAt = 0;
+function beat(force = false) {
+  if (!force && Date.now() - aliveAt < 15000) return;
+  aliveAt = Date.now();
+  store.set('alive', { t: aliveAt, idx: R.idx, n: R.chunks.length, play: R.wantPlay, vis: document.visibilityState, src: audio.currentSrc === waitUrl ? '待ちの無音' : audio.currentSrc === gapUrl ? '話の間' : '声' });
+}
 
 function silentWav(ms = 200, rate = 8000) {
   const n = Math.round(rate * ms / 1000), buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
@@ -1759,8 +1788,23 @@ function silentWav(ms = 200, rate = 8000) {
 // iPhoneはタップの瞬間に一度鳴らした要素でないと、あとから自動で再生できない
 function unlock(el) {
   silentUrl ||= URL.createObjectURL(silentWav());
+  el.loop = false;
   el.src = silentUrl;
   el.play().catch(() => {});
+}
+// 次の段落ができるのを待つ間は、音のない音をくり返し流しておく。
+// 何も鳴っていないと、画面を消して聞いているときにiPhoneがアプリを眠らせてしまい、段落の切れ目で再生が止まるため
+function startHush() {
+  if (waitUrl && audio.currentSrc === waitUrl && !audio.paused) return;
+  waitUrl ||= URL.createObjectURL(silentWav(10000));
+  R.hushing = true;
+  audio.loop = true;
+  audio.src = waitUrl;
+  audio.play().catch(() => {}).finally(() => { R.hushing = false; });
+}
+function stopHush() {
+  audio.loop = false;
+  if (waitUrl && audio.currentSrc === waitUrl) audio.pause();
 }
 
 function renderChunks() {
@@ -1991,6 +2035,9 @@ function stopAll() {
   R.wantPlay = false;
   R.halted = false;
   R.gap = null;
+  R.tries.clear();
+  R.cool.clear();
+  audio.loop = false;
   audio.pause();
   for (const u of R.urls.values()) URL.revokeObjectURL(u);
   R.urls.clear();
@@ -2000,21 +2047,41 @@ function stopAll() {
 function load(i) {
   if (i < 0 || i >= R.chunks.length) return null;
   if (R.loads.has(i)) return R.loads.get(i);
-  const ctrl = R.ctrl;
+  const ctrl = R.ctrl, t0 = Date.now();
   if (i !== R.idx) markChunk(i, 'loading');
   const p = synth(R.chunks[i].speech, ctrl.signal, R.profile).then((blob) => {
     if (ctrl !== R.ctrl) return null;
     const url = URL.createObjectURL(blob);
     R.urls.set(i, url);
+    R.tries.delete(i);
+    R.cool.clear(); // つながったので、やり直し待ちの段落もすぐ作ってよい
     markChunk(i, 'ready');
+    if (Date.now() - t0 > 1500) plog(`段落${i + 1} できた（${blob.via || '?'}・${Math.round((Date.now() - t0) / 1000)}秒）${visMark()}`);
     return url;
   }, (e) => {
     if (ctrl === R.ctrl) { R.loads.delete(i); markChunk(i, e.name === 'AbortError' ? '' : 'error'); }
+    if (e.name !== 'AbortError') plog(`段落${i + 1} 作れなかった（${e.kind || e.name}：${e.message}）${visMark()}`);
     throw e;
   });
   R.loads.set(i, p);
-  p.then(() => prefetch(), (e) => { if (i !== R.idx && ctrl === R.ctrl) handleError(e); });
+  p.then(() => prefetch(), (e) => {
+    if (i === R.idx || ctrl !== R.ctrl || e.name === 'AbortError') return;
+    if (!quietRetry(i, e)) handleError(e);
+  });
   return p;
+}
+// 一時的な不調（通信・Grok）か。こういうときは知らせずに、少し待ってやり直す
+const retryable = (e) => e?.kind === 'net' || e?.kind === 'temp';
+// 先の段落を作れなかったとき：一時的な不調なら、聞いている段落はそのまま流し、20秒・40秒後にやり直す（2回まで）
+function quietRetry(i, e) {
+  const n = (R.tries.get(i) || 0) + 1;
+  if (!retryable(e) || n > 2) return false;
+  R.tries.set(i, n);
+  const wait = 20000 * n, ctrl = R.ctrl;
+  R.cool.set(i, Date.now() + wait);
+  plog(`段落${i + 1} ${wait / 1000}秒後に作り直す（${n}回目）`);
+  setTimeout(() => { if (ctrl === R.ctrl) prefetch(); }, wait + 100);
+  return true;
 }
 // ElevenLabsの声で作るときは、聞かないかもしれない先の段落にクレジットを使わないよう、次の段落までにする
 const aheadNow = () => (R.profile?.engine === 'gemini' && !geminiModel() && nextSub() === 'el' ? 1 : AHEAD);
@@ -2023,7 +2090,7 @@ function prefetch() {
   let busy = 0;
   for (const i of R.loads.keys()) if (!R.urls.has(i)) busy++;
   for (let i = R.idx, last = R.idx + aheadNow(); i <= last && i < R.chunks.length && busy < PARALLEL; i++) {
-    if (!R.loads.has(i)) { load(i); busy++; }
+    if (!R.loads.has(i) && !(R.cool.get(i) > Date.now())) { load(i); busy++; }
   }
 }
 function trimUrls() {
@@ -2034,7 +2101,7 @@ function trimUrls() {
 
 async function playIndex(i, offset = 0, frac = 0, play = true) {
   if (i < 0 || i >= R.chunks.length) return;
-  const token = ++R.token;
+  const token = ++R.token, again = R.waiting && R.idx === i;
   R.gap = null;
   R.idx = i;
   R.wantPlay = play;
@@ -2043,22 +2110,42 @@ async function playIndex(i, offset = 0, frac = 0, play = true) {
   setNow(i);
   updateMedia();
   savePos();
-  setWaiting(!R.urls.has(i));
+  const ready = R.urls.has(i);
+  if (!ready && !again) R.waitAt = Date.now();
+  setWaiting(!ready);
   renderProgress();
+  if (!again) plog(`段落${i + 1}/${R.chunks.length}へ（${ready ? '用意できている' : 'できるのを待つ'}${play ? '' : '・止めたまま'}）${visMark()}`);
+  // できるのを待つ間は音のない音を流して、画面を消していてもアプリが眠らないようにする
+  if (play && !ready) startHush();
+  const pending = load(i);
+  if (!ready) prefetch(); // 待つ間に、次の段落も並べて作り始める
+  if (i === R.chunks.length - 1) prepareNextStory();
   let url;
   try {
-    url = await load(i);
+    url = await pending;
   } catch (e) {
     if (token !== R.token) return;
     if (e.name === 'AbortError') { if (R.ctrl && !R.ctrl.signal.aborted) playIndex(i, offset, frac, play); return; }
+    // 通信やGrokの一時的な不調なら、音のない音を流したまま10秒・20秒・30秒待って、もう一度作る（3回まで）
+    const n = (R.tries.get(i) || 0) + 1;
+    if (R.wantPlay && retryable(e) && n <= 3) {
+      R.tries.set(i, n);
+      plog(`段落${i + 1} ${n * 10}秒後にもう一度作る（${n}回目）${visMark()}`);
+      $('#playerStatus').textContent = 'うまくつながらないので、少し待ってもう一度作ります…';
+      setTimeout(() => { if (token === R.token) playIndex(i, offset, frac, R.wantPlay); }, n * 10000);
+      return;
+    }
     R.wantPlay = false;
+    stopHush();
     setWaiting(false);
     handleError(e);
     return;
   }
   if (token !== R.token || !url) return;
+  if (R.waiting) plog(`段落${i + 1} ${Math.round((Date.now() - R.waitAt) / 1000)}秒待ってできた${R.wantPlay ? '' : '（止めてあるので流さない）'}${visMark()}`);
   setWaiting(false);
   R.swapping = true;
+  audio.loop = false;
   audio.src = url;
   audio.defaultPlaybackRate = audio.playbackRate = settings.rate;
   if (offset || frac) {
@@ -2070,7 +2157,11 @@ async function playIndex(i, offset = 0, frac = 0, play = true) {
   if (R.wantPlay) {
     try { await audio.play(); }
     catch (e) {
-      if (token === R.token && e.name !== 'AbortError') { R.wantPlay = false; showNotice('再生ボタンを押すと始まります。'); }
+      if (token === R.token && e.name !== 'AbortError') {
+        plog(`段落${i + 1} 再生できなかった（${e.name}）${visMark()}`);
+        R.wantPlay = false;
+        showNotice('再生ボタンを押すと始まります。');
+      }
     }
   }
   R.swapping = false;
@@ -2078,17 +2169,21 @@ async function playIndex(i, offset = 0, frac = 0, play = true) {
   renderProgress();
   prefetch();
   trimUrls();
+  beat(true);
 }
 
 function togglePlay() {
   if (!R.chunks.length) return;
+  plog(`${R.gap || R.wantPlay ? '一時停止' : '再生'}を押した${visMark()}`);
   // 次の話へ移る間に止めたら、そこで止まる（次の話へは行かない）
   if (R.gap) { cancelGap(); audio.pause(); return; }
   if (R.wantPlay) {
     R.wantPlay = false;
+    audio.loop = false;
     audio.pause();
     savePos();
     renderPlay();
+    beat(true);
     return;
   }
   const ready = !R.finished && audio.currentSrc && audio.currentSrc === R.urls.get(R.idx);
@@ -2116,11 +2211,12 @@ function skip(sec) {
 }
 
 // 音を鳴らさない短い音（iPhoneで鳴らせるようにする音と、話と話の間）を流しているか
-const quiet = () => audio.currentSrc === silentUrl || audio.currentSrc === gapUrl;
+const quiet = () => audio.currentSrc === silentUrl || audio.currentSrc === gapUrl || (!!waitUrl && audio.currentSrc === waitUrl);
 audio.addEventListener('ended', () => {
   if (audio.currentSrc === gapUrl) { goNext(); return; }
   if (quiet() || !R.chunks.length || audio.currentSrc !== R.urls.get(R.idx)) return;
   if (R.idx + 1 < R.chunks.length) { playIndex(R.idx + 1); return; }
+  plog(`話の終わりまで流した${visMark()}`);
   R.wantPlay = false;
   R.finished = true;
   setNow(R.chunks.length);
@@ -2131,10 +2227,15 @@ audio.addEventListener('ended', () => {
 });
 audio.addEventListener('pause', () => {
   // 話と話の間を、ロック画面や電話で止められたら、次の話へは行かない
-  if (audio.currentSrc === gapUrl) { if (!audio.ended && R.gap) cancelGap(); return; }
+  if (audio.currentSrc === gapUrl) { if (!audio.ended && R.gap) { plog(`話の間で止められた${visMark()}`); cancelGap(); } return; }
+  // 段落ができるのを待つ間の無音を、ロック画面や電話で止められたら、できても流さない
+  if (waitUrl && audio.currentSrc === waitUrl) {
+    if (!R.swapping && !R.hushing && R.wantPlay && R.waiting) { plog(`待っている間に止められた（ロック画面・電話など）${visMark()}`); R.wantPlay = false; savePos(); renderPlay(); beat(true); }
+    return;
+  }
   // ロック画面や電話で止まったときは、こちらの状態も止める
   if (audio.ended || R.swapping || quiet()) return;
-  if (R.wantPlay && !R.waiting) { R.wantPlay = false; savePos(); renderPlay(); }
+  if (R.wantPlay && !R.waiting) { plog(`段落${R.idx + 1} の途中で止められた（ロック画面・電話・ほかの音など）${visMark()}`); R.wantPlay = false; savePos(); renderPlay(); beat(true); }
 });
 audio.addEventListener('play', () => {
   if (quiet()) return;
@@ -2143,12 +2244,14 @@ audio.addEventListener('play', () => {
 });
 audio.addEventListener('timeupdate', () => {
   checkSleep(); // 裏で動いているときは時計が遅れることがあるので、鳴っているあいだはここでも確かめる
+  beat();
   if (quiet()) return;
   renderProgress();
   if (Date.now() - R.savedAt > 5000) savePos();
 });
 audio.addEventListener('error', () => {
   if (!audio.currentSrc || audio.currentSrc === silentUrl || audio.currentSrc !== R.urls.get(R.idx)) return;
+  plog(`段落${R.idx + 1} の音声を読み込めなかった（${audio.error?.code || '?'}）${visMark()}`);
   markChunk(R.idx, 'error');
   R.wantPlay = false;
   renderPlay();
@@ -2157,6 +2260,7 @@ audio.addEventListener('error', () => {
 
 function handleError(e) {
   if (e.name === 'AbortError') return;
+  plog(`お知らせを出した（${e.kind || e.name}：${e.message}）${visMark()}`);
   R.halted = true;
   renderPlay();
   if (e.kind === 'nokey' || e.kind === 'auth') {
@@ -2201,7 +2305,7 @@ $('#rateBtn').addEventListener('click', () => {
   renderProgress();
 });
 if ('mediaSession' in navigator) {
-  const handlers = { play: () => { if (!R.wantPlay) togglePlay(); }, pause: () => { if (R.wantPlay) togglePlay(); }, previoustrack: prev, nexttrack: next };
+  const handlers = { play: () => { plog('ロック画面などの「再生」'); if (!R.wantPlay) togglePlay(); }, pause: () => { plog('ロック画面などの「一時停止」'); if (R.wantPlay) togglePlay(); }, previoustrack: () => { plog('ロック画面などの「前へ」'); prev(); }, nexttrack: () => { plog('ロック画面などの「次へ」'); next(); } };
   for (const [action, fn] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} }
 }
 
@@ -2216,6 +2320,8 @@ function addUpNext(id) {
   upNext.push(id);
   saveUpNext();
   renderUpNext();
+  // 聞いている話がもう最後の段落なら、いま入れた話の最初の段落を先に作っておく
+  if (R.chunks.length && R.idx === R.chunks.length - 1 && R.wantPlay) prepareNextStory();
 }
 function dropUpNext(id) {
   if (!upNext.includes(id)) return;
@@ -2243,6 +2349,7 @@ async function storyEnded() {
   renderPlay();
   renderProgress();
   gapUrl ||= URL.createObjectURL(silentWav(2500));
+  audio.loop = false;
   audio.src = gapUrl;
   audio.play().catch(() => goNext());
 }
@@ -2250,7 +2357,29 @@ function goNext() {
   const nx = R.gap;
   if (!nx) return;
   R.gap = null;
+  plog(`次の話へ${visMark()}`);
   startNext(nx);
+}
+// この話の最後の段落に入ったら、次に聞く話の最初の段落を先に作っておく（話の切れ目で待たないように）
+// 作ったものは保存されるので、次の話を始めたときにすぐ流れる。話の終わりで止めるおやすみタイマーのときは作らない
+let nextPrep = '';
+async function prepareNextStory() {
+  if (!settings.autoNext || sleepT.mode === 'end') return;
+  const leftMs = (R.total - R.prefix[R.idx]) / CHARS_PER_MIN / settings.rate * 60000;
+  if (sleepT.mode === 'time' && sleepT.until - Date.now() < leftMs) return;
+  const id = upNextIds().find((x) => x !== R.docId); // 聞き始めたばかりの話は、まだ列に残っていることがあるので外す
+  if (!id || nextPrep === id) return;
+  nextPrep = id;
+  const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
+  const first = doc && typeof text === 'string' ? docChunks(doc, text)[0] : null;
+  if (!first) { nextPrep = ''; return; }
+  if ((await cacheKeys()).has(keyFor(first.speech, doc.profile))) return;
+  plog('次の話の最初の段落を、先に作り始めた');
+  // 話が変わっても止めない（作り終えて保存しておけば、次の話ですぐ使える）
+  synth(first.speech, new AbortController().signal, doc.profile).then(
+    (b) => plog(`次の話の最初の段落ができた（${b.via || '?'}）`),
+    (e) => { nextPrep = ''; plog(`次の話の先作りは失敗（${e.kind || e.name}：${e.message}）`); },
+  );
 }
 function startNext({ doc, text }) {
   // 文章の欄が、いま終わった話のままなら、次の話に入れ替える（書きかけの文章があれば、そのまま）
@@ -2301,6 +2430,7 @@ function checkSleep() {
   if (sleepT.mode !== 'time') return;
   const left = sleepT.until - Date.now();
   if (left <= 0) {
+    plog('おやすみタイマーの時間になった');
     if (R.gap || R.wantPlay) togglePlay();
     setSleep('0');
     return;
@@ -2368,6 +2498,7 @@ function openSettings(msg) {
   $('#autoNext').checked = settings.autoNext;
   $('#geminiFallback').checked = settings.geminiFallback;
   $('#saveCalls').checked = settings.saveCalls;
+  $('#plogCount').textContent = `記録 ${plogBuf.length}行（新しい${PLOG_MAX}行まで）`;
   $('#msFallback').checked = settings.msFallback;
   $('#msKey').value = settings.msKey;
   $('#msCalm').checked = settings.msCalm;
@@ -2925,7 +3056,8 @@ $('#histList').addEventListener('click', async (e) => {
 // 保存を頼まれた履歴は、1件ずつ順番に、まだ作っていない段落を作る。待ちの列はアプリを閉じても覚えておき、次に開いたときに続ける
 // paused：作れなかった理由（その話を先頭に残して、列を止めている）
 // done：できあがった話（アプリを閉じても、新しい5話ぶんほど覚えておく）／batchDone：いまの順番待ちで、保存し終えた話の数（全体の棒に使う）
-const saver = { queue: [], job: null, paused: '', names: new Map(), done: store.get('saveDone', []), batchDone: 0 };
+// retries：一時的な不調で、続けてやり直した回数／retryAt：次にやり直す時刻
+const saver = { queue: [], job: null, paused: '', names: new Map(), done: store.get('saveDone', []), batchDone: 0, retries: 0, retryAt: 0 };
 function noteDone(job) {
   saver.done = [{ id: job.id, title: job.title, n: job.n, at: Date.now() }, ...saver.done.filter((d) => d.id !== job.id)].slice(0, 8);
   store.set('saveDone', saver.done);
@@ -2935,7 +3067,7 @@ const agoOf = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s <
 // いま作っている話の様子。「最後に段落ができてから」の時間も出して、止まっていないと分かるようにする
 function jobMeta(job) {
   const idle = Date.now() - job.last, p = job.n ? Math.floor((job.done / job.n) * 100) : 100;
-  return `作っています… ${job.done}/${job.n}段落（${p}%）・最後に進んだのは${agoOf(idle)}${idle > 45000 ? '。時間がかかっています（混み合っているときは、自動でやり直しています）' : ''}`;
+  return `作っています… ${job.done}/${job.n}段落（${p}%）・最後に進んだのは${agoOf(idle)}${playerStalled() ? '。いまは、聞いている話の続きを先に作っています' : idle > 45000 ? '。時間がかかっています（混み合っているときは、自動でやり直しています）' : ''}`;
 }
 const saveQueue = () => store.set('saveQueue', [saver.job?.id, ...saver.queue].filter(Boolean));
 // 止まったことも覚えておき、同じ日にアプリを開き直したときは、「続ける」を押すまで待つ
@@ -2970,6 +3102,8 @@ function stopSaving(id) {
 }
 // 聞いている話の段落や書き出しを先に作れるよう、それらが作っているあいだは1つずつ作る
 const othersBusy = () => [...R.loads.keys()].some((i) => !R.urls.has(i)) || !!(exp && !exp.url);
+// 聞いている話が、段落ができるのを待って止まっているか。そのあいだは順番待ちを休んで、聞いている話を先に作る
+const playerStalled = () => R.wantPlay && R.waiting && !!R.chunks.length;
 let saverRunning = false;
 async function runSaver() {
   if (saverRunning) return;
@@ -2989,10 +3123,11 @@ async function saverLoop() {
     saver.names.set(id, doc.title);
     saveQueue();
     renderSaving();
+    plog(`順番待ち：作り始めた（残り${todo.length}段落）${visMark()}`);
     let next = 0;
     const worker = async (w) => {
       while (next < todo.length && !job.ctrl.signal.aborted) {
-        if (w > 0 && othersBusy()) { await sleep(1000); continue; }
+        if ((w > 0 && othersBusy()) || playerStalled()) { await sleep(1000); continue; }
         await synth(todo[next++].speech, job.ctrl.signal, doc.profile);
         job.done++;
         job.last = Date.now();
@@ -3007,6 +3142,20 @@ async function saverLoop() {
         // この話を先頭に戻して、列を止める（無料枠を使い切ったなど、あとの話も同じ理由で作れないことが多いので）
         saver.queue.unshift(id);
         saver.job = null;
+        // ただし通信やGrokの一時的な不調なら、止めずに30秒・60秒・90秒待ってやり直す（続けて3回まで）
+        if (retryable(e) && saver.retries < 3) {
+          saver.retries++;
+          const wait = 30000 * saver.retries;
+          saver.retryAt = Date.now() + wait;
+          plog(`順番待ち：一時的な不調（${e.message}）。${wait / 1000}秒後にやり直す${visMark()}`);
+          saveQueue();
+          renderSaving();
+          await sleep(wait);
+          saver.retryAt = 0;
+          continue;
+        }
+        saver.retries = 0;
+        plog(`順番待ち：止めた（${e.kind || e.name}：${e.message}）${visMark()}`);
         setPaused(e.message);
         saveQueue();
         renderSaving();
@@ -3018,7 +3167,7 @@ async function saverLoop() {
     }
     saver.job = null;
     saveQueue();
-    if (!job.ctrl.signal.aborted) { saver.batchDone++; noteDone(job); }
+    if (!job.ctrl.signal.aborted) { saver.batchDone++; saver.retries = 0; noteDone(job); plog(`順番待ち：1話保存できた${visMark()}`); }
     if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。`, '履歴を開く', () => { hideNotice(); showView('history'); });
   }
   if (!saver.queue.length && !saver.job) saver.batchDone = 0;
@@ -3056,7 +3205,7 @@ async function renderQueue() {
     const job = saver.job?.id === id ? saver.job : null, q = saver.queue.indexOf(id);
     const li = make('li', job ? 'now' : '');
     const body = make('div', 'q-body');
-    const meta = job ? jobMeta(job) : saver.paused && q === 0 ? '止まっています' : `順番待ち・${q + 1}番目`;
+    const meta = job ? jobMeta(job) : saver.paused && q === 0 ? '止まっています' : saver.retryAt > Date.now() && q === 0 ? 'うまくつながらないので、少し待ってやり直します' : `順番待ち・${q + 1}番目`;
     body.append(make('span', 'q-title', saver.names.get(id)), make('span', job ? 'q-meta q-live' : 'q-meta', meta));
     if (job) {
       const jp = job.n ? Math.floor((job.done / job.n) * 100) : 100, m = make('div', 'meter'), f = make('div');
@@ -3588,7 +3737,32 @@ function exportClosed() {
 $('#expClose').addEventListener('click', () => { expDlg.close(); exportClosed(); });
 expDlg.addEventListener('close', exportClosed);
 
+/* ---------- 再生の記録をコピー ---------- */
+function plogText() {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const subs = subOrder().filter((id) => SUBS[id].ready()).map((id) => SUBS[id].name).join('→') || 'なし';
+  const model = settings.engine === 'gemini' ? (geminiModel() ? `${MODEL_NAME[geminiModel()]}が使える` : '今日の分は使い切り') : '';
+  return [
+    'よみこえ 再生の記録',
+    `書き出し：${hms(Date.now())}`,
+    `端末：${navigator.userAgent}`,
+    `開き方：${standalone ? 'ホーム画面のアイコンから' : 'ブラウザで'}`,
+    `声：${ENGINE_NAME[settings.engine]}${model ? `（${model}）` : ''}・1話を1回で作る=${settings.saveCalls ? 'オン' : 'オフ'}・予備の順=${subs}・今日使えない予備=${subNames(subsOut()) || 'なし'}・話が終わったら次へ=${settings.autoNext ? 'オン' : 'オフ'}`,
+    '',
+    ...plogBuf,
+  ].join('\n');
+}
+$('#plogCopy').addEventListener('click', (e) => copyRaw(e.currentTarget, plogText()));
+
 /* ---------- 起動 ---------- */
+// 再生の記録：アプリを開いたこと。前回、再生中のままアプリが終わっていたら書いておく（画面を消している間にiPhoneに止められた等）
+{
+  const a = store.get('alive', null), nav = performance.getEntriesByType?.('navigation')?.[0]?.type || '';
+  plog(`アプリを開いた（${nav === 'reload' ? '読み込み直し' : nav === 'back_forward' ? '戻る' : '新しく'}）${a?.play ? `。前回は再生中のまま終わっていた（最後の印 ${hms(a.t)}・段落${a.idx + 1}/${a.n}・${a.vis === 'hidden' ? '画面は裏' : '画面は表'}・${a.src}）` : ''}`);
+  store.set('alive', null);
+}
+document.addEventListener('visibilitychange', () => plog(document.visibilityState === 'hidden' ? '画面が裏になった（画面を消した・ほかのアプリへ）' : '画面が表に戻った'));
+addEventListener('pagehide', (e) => { beat(true); plog(`アプリを閉じる合図（${e.persisted ? 'あとで戻れる' : '終わり'}）`); });
 // 前に開いていたときの待ちの列を、続きから作る
 saver.queue = store.get('saveQueue', []);
 if (saver.done.length) renderQueue();
