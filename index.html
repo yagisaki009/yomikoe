@@ -2136,7 +2136,7 @@ function renderProgress() {
   const k = episodeAt(done);
   if (k !== R.curEp) { R.curEp = k; updateMedia(); }
   renderMarkBtn();
-  if (!R.waiting) $('#playerStatus').textContent = R.flash && Date.now() < R.flash.until ? R.flash.text : R.gap ? `次の話「${R.gap.doc.title || '（無題）'}」へ…` : R.finished ? '最後まで読み上げました' : statusText(done);
+  if (!R.waiting) $('#playerStatus').textContent = R.flash && Date.now() < R.flash.until ? R.flash.text : R.gap ? (R.gap.next ? `次の話「${R.gap.next.doc.title || '（無題）'}」へ…` : '次の話へ…') : R.finished ? '最後まで読み上げました' : statusText(done);
 }
 
 /* ---------- 再生位置のバー：クリック・ドラッグで好きな位置へ ---------- */
@@ -2481,19 +2481,25 @@ audio.addEventListener('ended', () => {
   if (quiet() || !R.chunks.length || audio.currentSrc !== R.urls.get(R.idx)) return;
   if (R.idx + 1 < R.chunks.length) { playIndex(R.idx + 1); return; }
   plog(`話の終わりまで流した${visMark()}`);
-  R.wantPlay = false;
   R.finished = true;
   setNow(R.chunks.length);
   savePos();
+  // 次の話へ続けるときは、ここで（何も待たずに）話と話の間の無音を流し始める。
+  // 次の話を探している間に何も鳴っていないと、画面を消して聞いているときにiPhoneがアプリを眠らせ、
+  // 1話ごとに止まっていた（2026-11-24）
+  const cont = beginGap();
+  R.wantPlay = cont;
   renderPlay();
   renderProgress();
-  storyEnded();
+  storyEnded(cont);
 });
 audio.addEventListener('pause', () => {
   // 話と話の間を、ロック画面や電話で止められたら、次の話へは行かない
   if (audio.currentSrc === gapUrl) { if (!audio.ended && R.gap) { plog(`話の間で止められた${visMark()}`); cancelGap(); } return; }
   // 段落ができるのを待つ間の無音を、ロック画面や電話で止められたら、できても流さない
   if (waitUrl && audio.currentSrc === waitUrl) {
+    // 話と話の間で次の話を待っているときに、電話やほかの音で止められたら、次の話へは行かない
+    if (R.gap && !R.hushing && !R.swapping) { plog(`話の間で止められた${visMark()}`); cancelGap(); return; }
     if (!R.swapping && !R.hushing && R.wantPlay && R.waiting) { plog(`待っている間に止められた（ロック画面・電話など）${visMark()}`); keepBlocked = true; R.wantPlay = false; savePos(); renderPlay(); beat(true); }
     return;
   }
@@ -2606,26 +2612,34 @@ async function nextStory() {
   return null;
 }
 // 話が終わったとき：おやすみタイマーが「この話の終わり」なら、ここで止める。次に聞く話があれば、少し間をおいて流す
-async function storyEnded() {
-  if (sleepT.mode === 'end') { setSleep('0'); return; }
-  if (!settings.autoNext) return;
-  const ctrl = R.ctrl, nx = await nextStory();
-  if (!nx || ctrl !== R.ctrl || !R.finished || R.wantPlay) return;
-  R.gap = nx;
-  R.wantPlay = true;
-  renderPlay();
-  renderProgress();
+// 話と話の間（2秒半の無音）を流し始める。R.gap.next：次の話（探し終えたら入る）、R.gap.over：無音が先に終わった
+function beginGap() {
+  if (sleepT.mode === 'end' || !settings.autoNext || !upNextIds().length) return false;
+  R.gap = { next: null, over: false };
   gapUrl ||= URL.createObjectURL(silentWav(2500));
   audio.loop = false;
   audio.src = gapUrl;
-  audio.play().catch(() => goNext());
+  audio.play().catch((e) => { plog(`話の間の無音を流せなかった（${e.name}）${visMark()}`); if (R.gap) { R.gap.over = true; goNext(); } });
+  return true;
+}
+async function storyEnded(cont) {
+  if (sleepT.mode === 'end') { setSleep('0'); return; }
+  if (!cont) return;
+  const ctrl = R.ctrl, gap = R.gap, nx = await nextStory();
+  if (ctrl !== R.ctrl || R.gap !== gap) return; // 間のうちに止められた・ほかの話を始めた
+  if (!nx) { plog(`次の話を読み出せなかったので止める${visMark()}`); cancelGap(); audio.loop = false; audio.pause(); return; }
+  gap.next = nx;
+  renderProgress();
+  if (gap.over) goNext();
 }
 function goNext() {
-  const nx = R.gap;
-  if (!nx) return;
+  const g = R.gap;
+  if (!g) return;
+  // 次の話をまだ探しているときは、音のない音を流し続けて待つ（アプリを眠らせない）
+  if (!g.next) { g.over = true; startHush(); return; }
   R.gap = null;
   plog(`次の話へ${visMark()}`);
-  startNext(nx);
+  startNext(g.next);
 }
 // この話の最後の段落に入ったら、次に聞く話の最初の段落を先に作っておく（話の切れ目で待たないように）
 // 作ったものは保存されるので、次の話を始めたときにすぐ流れる。話の終わりで止めるおやすみタイマーのときは作らない
