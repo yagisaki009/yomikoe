@@ -153,6 +153,9 @@ body.has-player main { padding-bottom: 190px; }
 .q-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .queue-paused { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .queue-paused .msg { flex: 1; }
+.keep-row { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.keep-row .hint { flex: 1; margin: 0; }
+.keep-row .btn { flex: none; white-space: nowrap; }
 .q-sum { margin: 0 0 10px; }
 .q-sum .usage { margin: 0 0 6px; font-size: 14px; }
 .q-sum .meter, .q-body .meter { height: 8px; border-radius: 4px; }
@@ -369,6 +372,10 @@ input, select, textarea {
         <p id="queueMsg" class="msg"></p>
         <button type="button" id="queueResume" class="btn ghost small">続ける</button>
       </div>
+      <div id="keepRow" class="keep-row" hidden>
+        <p id="keepText" class="hint"></p>
+        <button type="button" id="keepBtn" class="btn ghost small">画面を消しても続ける</button>
+      </div>
       <div id="queueSum" class="q-sum" hidden>
         <p id="queueSumText" class="usage" aria-live="polite"></p>
         <div id="queueSumMeter" class="meter" role="progressbar" aria-label="順番待ち全体の進み" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="queueSumFill"></div></div>
@@ -378,7 +385,7 @@ input, select, textarea {
         <div class="q-done-head"><p class="label">できあがった話</p><button type="button" id="queueDoneClear" class="btn ghost small">片づける</button></div>
         <ul id="queueDone" class="q-done"></ul>
       </div>
-      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。入れた話は、聞いている話が終わると、入れた順に続けて流れます（履歴からも聞けます）。作っている間は、よみこえを開いたままにしてください（閉じると止まります。次に開いたとき、残りだけを続きから作ります）。</p>
+      <p class="hint">「順番待ちに入れる」を押すと、聞いている話や書き出しはそのままで、上から順に作って端末に保存します。入れた話は、聞いている話が終わると、入れた順に続けて流れます（履歴からも聞けます）。画面を消しても、作り続けます（設定の「順番待ち」で切りかえられます）。よみこえを閉じる（アプリの切りかえ画面で上にはらう）と止まり、次に開いたとき、残りだけを続きから作ります。</p>
     </div>
   </section>
 
@@ -605,6 +612,12 @@ input, select, textarea {
     </section>
 
     <section class="group">
+      <h3>順番待ち</h3>
+      <label class="check"><input id="bgSave" type="checkbox">画面を消しても、作り続ける</label>
+      <p class="hint">iPhoneは、音を鳴らしていないWebアプリを、画面を消したりほかのアプリに移ったりすると休ませます（順番待ちも止まります）。そこで、順番待ちを作っているあいだ（話を聞いていないとき）は、音のない音を流して、休ませないようにします。ロック画面には「よみこえ：保存しています」と出ます。始めるときに、ほかのアプリで流している音楽などは止まります。また、ほかのアプリで音を出すとそちらが優先され、作るのも止まります（よみこえに戻って、順番待ちの欄の「画面を消しても続ける」を押すと、また始まります）。</p>
+    </section>
+
+    <section class="group">
       <h3>読み方の辞書</h3>
       <textarea id="dict" rows="4" placeholder="怪異=かいい&#10;御手洗=みたらい"></textarea>
       <p class="hint">1行に「書き方=読み方」で登録すると、その読みで発音します。小説の「漢字《かんじ》」形式のルビも読みとして使います。</p>
@@ -713,7 +726,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'ms', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -1941,6 +1954,7 @@ function renderPlay() {
   $('#playIcon').setAttribute('d', R.wantPlay ? 'M6.5 5h4v14h-4zM13.5 5h4v14h-4z' : 'M8 5.2v13.6L19 12z');
   $('#playBtn').setAttribute('aria-label', R.wantPlay ? '一時停止' : '再生');
   $('#playBtn').classList.toggle('waiting', R.waiting && R.wantPlay);
+  syncKeepSafe();
 }
 function setWaiting(on) {
   R.waiting = on;
@@ -2268,6 +2282,7 @@ async function playIndex(i, offset = 0, frac = 0, play = true) {
 }
 
 function togglePlay() {
+  keepBlocked = false;
   if (!R.chunks.length) return;
   plog(`${R.gap || R.wantPlay ? '一時停止' : '再生'}を押した${visMark()}`);
   // 次の話へ移る間に止めたら、そこで止まる（次の話へは行かない）
@@ -2325,12 +2340,12 @@ audio.addEventListener('pause', () => {
   if (audio.currentSrc === gapUrl) { if (!audio.ended && R.gap) { plog(`話の間で止められた${visMark()}`); cancelGap(); } return; }
   // 段落ができるのを待つ間の無音を、ロック画面や電話で止められたら、できても流さない
   if (waitUrl && audio.currentSrc === waitUrl) {
-    if (!R.swapping && !R.hushing && R.wantPlay && R.waiting) { plog(`待っている間に止められた（ロック画面・電話など）${visMark()}`); R.wantPlay = false; savePos(); renderPlay(); beat(true); }
+    if (!R.swapping && !R.hushing && R.wantPlay && R.waiting) { plog(`待っている間に止められた（ロック画面・電話など）${visMark()}`); keepBlocked = true; R.wantPlay = false; savePos(); renderPlay(); beat(true); }
     return;
   }
   // ロック画面や電話で止まったときは、こちらの状態も止める
   if (audio.ended || R.swapping || quiet()) return;
-  if (R.wantPlay && !R.waiting) { plog(`段落${R.idx + 1} の途中で止められた（ロック画面・電話・ほかの音など）${visMark()}`); R.wantPlay = false; savePos(); renderPlay(); beat(true); }
+  if (R.wantPlay && !R.waiting) { plog(`段落${R.idx + 1} の途中で止められた（ロック画面・電話・ほかの音など）${visMark()}`); keepBlocked = true; R.wantPlay = false; savePos(); renderPlay(); beat(true); }
 });
 audio.addEventListener('play', () => {
   if (quiet()) return;
@@ -2400,7 +2415,7 @@ $('#rateBtn').addEventListener('click', () => {
   renderProgress();
 });
 if ('mediaSession' in navigator) {
-  const handlers = { play: () => { plog('ロック画面などの「再生」'); if (!R.wantPlay) togglePlay(); }, pause: () => { plog('ロック画面などの「一時停止」'); if (R.wantPlay) togglePlay(); }, previoustrack: () => { plog('ロック画面などの「前へ」'); prev(); }, nexttrack: () => { plog('ロック画面などの「次へ」'); next(); } };
+  const handlers = { play: () => { plog('ロック画面などの「再生」'); if (!R.wantPlay) togglePlay(); }, pause: () => { plog('ロック画面などの「一時停止」'); if (R.wantPlay || R.gap) togglePlay(); else stopKeepByUser(); }, previoustrack: () => { plog('ロック画面などの「前へ」'); prev(); }, nexttrack: () => { plog('ロック画面などの「次へ」'); next(); } };
   for (const [action, fn] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} }
 }
 
@@ -2594,6 +2609,7 @@ function openSettings(msg) {
   $('#dict').value = settings.dict;
   $('#scriptOnly').checked = settings.scriptOnly;
   $('#autoNext').checked = settings.autoNext;
+  $('#bgSave').checked = settings.bgSave;
   $('#geminiFallback').checked = settings.geminiFallback;
   $('#saveCalls').checked = settings.saveCalls;
   $('#plogCount').textContent = `記録 ${plogBuf.length}行（新しい${PLOG_MAX}行まで）`;
@@ -2686,6 +2702,7 @@ $('#readAfterword').addEventListener('change', (e) => { settings.readAfterword =
 $('#geminiFallback').addEventListener('change', (e) => { settings.geminiFallback = e.target.checked; saveSettings(); renderUsage(); });
 $('#saveCalls').addEventListener('change', (e) => { settings.saveCalls = e.target.checked; saveSettings(); });
 $('#autoNext').addEventListener('change', (e) => { settings.autoNext = e.target.checked; saveSettings(); renderUpNext(); });
+$('#bgSave').addEventListener('change', (e) => { settings.bgSave = e.target.checked; saveSettings(); if (e.target.checked) primeKeep(); else syncKeep(); });
 function fillMs() {
   const reg = $('#msRegion'), sel = $('#msVoice');
   if (!reg.options.length) for (const [id, name] of Object.entries(MS_REGIONS)) reg.add(new Option(name, id));
@@ -3192,6 +3209,7 @@ function resumeSaver() {
   setPaused('');
   renderSaving();
   runSaver(); // もう動いていれば何もしない
+  primeKeep(); // 画面を消しても作り続ける（保存を頼むのは、いつもタップから）
 }
 function stopSaving(id) {
   saver.queue = saver.queue.filter((q) => q !== id);
@@ -3321,7 +3339,106 @@ function renderSaving() {
   renderOfflineBar();
   renderQueue();
   refreshHistory();
+  syncKeepSafe();
 }
+
+/* ---------- 画面を消しても作り続ける ---------- */
+// iPhoneは、音を鳴らしていないWebアプリを、画面を消したりほかのアプリに移ったりすると休ませる（順番待ちも止まる）。
+// 順番待ちを作っているあいだ、話を聞いていなければ、音のない音をくり返し流して、休ませないようにする（再生用とは別の要素）。
+// iPhoneの決まりで、鳴らし始められるのはタップしたときだけ（順番待ちに入れる・端末に保存・続ける などのタップで始める）。
+// いちどタップで始めれば、話を聞き終えたあとなどは、タップなしでも続けられる。
+// ほかのアプリの音や電話で止められたら、次にタップするまで自分からは鳴らさない（ほかのアプリの音を止め返さないように）
+const keepAudio = new Audio();
+keepAudio.loop = true;
+let keepUrl = null, keepWant = false, keepUnlocked = false, keepBlocked = false;
+const playerActive = () => R.wantPlay || !!R.gap;
+const saverBusy = () => !saver.paused && (saver.queue.length > 0 || !!saver.job);
+// 作っているのに15分進まないときは、電池を使い続けないよう止める
+const saverStuck = () => !!saver.job && Date.now() - saver.job.last > 15 * 60000;
+const keepNeeded = () => settings.bgSave && saverBusy() && !saverStuck() && !playerActive();
+function keepPlay(why) {
+  keepWant = true;
+  if (!keepAudio.paused) { updateKeepMedia(); return; }
+  keepUrl ||= URL.createObjectURL(silentWav(10000));
+  if (keepAudio.src !== keepUrl) keepAudio.src = keepUrl;
+  keepAudio.loop = true;
+  keepAudio.play().then(() => {
+    keepUnlocked = true;
+    plog(`画面を消しても作り続けるよう、音のない音を始めた（${why}）${visMark()}`);
+    updateKeepMedia();
+    syncKeep(); // 始めるあいだに要らなくなっていたら止める
+  }, (e) => {
+    keepWant = false;
+    if (e?.name !== 'AbortError') plog(`音のない音を始められなかった（${e?.name || e}）${visMark()}`);
+    renderKeep();
+  });
+}
+// 順番待ちや再生の様子が変わるたびに呼ぶ。要るときは続け（タップで始めたことがあれば、タップなしでも始め）、要らなければ止める
+function syncKeep() {
+  // タップで始めた直後（これから作り始めるところ）は、すぐには止めない（止めてすぐ始め直すと、ロック画面がちらつく）
+  const grace = Date.now() < keepGrace && settings.bgSave && !playerActive();
+  if (keepNeeded()) {
+    if (keepAudio.paused && !keepWant && keepUnlocked && !keepBlocked) keepPlay('続き');
+    else if (!keepAudio.paused) updateKeepMedia();
+  } else if ((keepWant || !keepAudio.paused) && !grace) {
+    keepWant = false;
+    keepAudio.pause();
+    plog(`音のない音を止めた（${playerActive() ? '話を聞き始めた' : !saverBusy() ? '順番待ちが終わった・止まった' : saverStuck() ? '15分進まない' : '設定でオフ'}）${visMark()}`);
+    if (R.chunks.length) updateMedia(); else try { navigator.mediaSession.metadata = null; } catch { /* 出せない */ }
+  }
+  renderKeep();
+}
+function syncKeepSafe() { try { syncKeep(); } catch { /* 起動の途中 */ } }
+// 保存に関わるボタンをタップしたとき（タップの中なので、鳴らし始められる）
+let keepGrace = 0;
+function primeKeep() {
+  if (!settings.bgSave || playerActive()) return;
+  keepBlocked = false;
+  keepGrace = Date.now() + 5000;
+  setTimeout(syncKeepSafe, 5200); // 作るものがなかったら（もう保存してあった等）、そのあとで止める
+  if (keepAudio.paused) keepPlay('タップ');
+}
+// ロック画面の一時停止で、作り続けるための音を止めた（次にタップするまで、自分からは始めない）
+function stopKeepByUser() {
+  if (!keepWant && keepAudio.paused) return;
+  keepWant = false;
+  keepBlocked = true;
+  keepAudio.pause();
+  plog('ロック画面などで、作り続けるための音を止めた（このあと画面を消すと、作るのも止まる）');
+  renderKeep();
+}
+keepAudio.addEventListener('pause', () => {
+  // こちらで止めたのではなく、ほかのアプリの音や電話で止められたとき
+  if (!keepWant) return;
+  keepWant = false;
+  keepBlocked = true;
+  plog(`音のない音が、ほかの音や電話などで止められた${visMark()}`);
+  renderKeep();
+});
+// ロック画面に、保存の進み具合を出す（話を聞いているときは、話の題名のまま）
+function updateKeepMedia() {
+  if (!('mediaSession' in navigator) || playerActive() || keepAudio.paused) return;
+  const j = saver.job, left = saver.queue.length;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'よみこえ：保存しています',
+      artist: j ? `${j.done}/${j.n}段落${left ? `・ほか${left}話` : ''}` : `残り${left}話`,
+      album: 'よみこえ',
+      artwork: [{ src: new URL('icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' }],
+    });
+  } catch { /* 出せない */ }
+}
+// 順番待ちの欄：画面を消しても作り続けているか。止まっていたら、始めるボタンを出す
+function renderKeep() {
+  const show = settings.bgSave && saverBusy() && !playerActive();
+  const on = !keepAudio.paused;
+  $('#keepRow').hidden = !show;
+  if (!show) return;
+  $('#keepText').textContent = on ? '画面を消しても、作り続けます（ロック画面に「保存しています」と出ます）' : '画面を消すと、作るのが止まります';
+  $('#keepBtn').hidden = on;
+}
+$('#keepBtn').addEventListener('click', () => primeKeep());
+setInterval(syncKeepSafe, 30000); // 15分進まないときなどのため、ときどき見直す
 // 履歴の一覧は、開いているときだけ、まとめて描き直す
 function refreshHistory() {
   if (!$('#historyView').hidden && !histTimer) histTimer = setTimeout(() => { histTimer = 0; renderHistory(); }, 400);
@@ -3408,6 +3525,7 @@ $('#queueBtn').addEventListener('click', async () => {
   const text = textEl.value;
   if (!text.trim()) { showNotice('順番待ちに入れる文章を貼り付けてください。'); return; }
   if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  primeKeep(); // タップの中で、音のない音を始めておく（作り始めるのは、このあと）
   const r = await queueText(text);
   if (!r) { showNotice('読み上げる文章がありません。'); return; }
   // 次の話をすぐ貼り付けられるよう、欄を空にする（文章は履歴に残っている）
