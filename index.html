@@ -1396,7 +1396,7 @@ async function makeElPart(k, body, voice) {
     const said = `（ElevenLabsの返事：${res.status}${code ? ` ${code}` : ''}${detail ? ` ${detail.slice(0, 160)}` : ''}）`;
     const modelName = EL_MODELS[body.model_id] || body.model_id;
     if (/voice_not_found/i.test(code) || (res.status === 404 && /voice/i.test(code + detail))) throw new TtsError('auth', `ElevenLabsの声が見つかりません。設定で選び直してください。${said}`);
-    if (/voice|model|fine.?tun/i.test(code + detail) && body.model_id !== 'eleven_multilingual_v2') throw new TtsError('auth', `この声は、モデル「${modelName}」では使えないようです。設定のElevenLabsの「モデル」を「Multilingual v2（安定）」に戻してください。${said}`);
+    if (/voice|model|fine.?tun/i.test(code + detail) && body.model_id !== 'eleven_multilingual_v2') throw new TtsError('auth', `この声は、モデル「${modelName}」では使えないようです。設定のElevenLabsの「モデル」を、別のもの（${body.model_id === 'eleven_v3' ? 'Multilingual v2' : 'v3'}など）に変えてください。${said}`);
     throw new TtsError('bad', `ElevenLabsの声を作れませんでした。${said}`);
   }
 }
@@ -1472,7 +1472,26 @@ const subNames = (ids) => [...new Set(ids)].map((id) => SUBS[id]?.name || id).jo
 const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の声も使えません。${subOrder().map(subState).filter(Boolean).join('')}Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
 // 代わりの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう、どの声で作ったかを覚えておく
 const subKeys = new Map(store.get('subKeys', []).map((x) => (Array.isArray(x) ? x : [x, 'ms'])));
-const saveSubKeys = () => store.set('subKeys', [...subKeys]);
+// 予備の声で作った段落の、声の名前とモデル（履歴に「ElevenLabs・○○（v3）」と出すため。2026-11-24から覚える）
+const subVoices = new Map(store.get('subVoices', []));
+const saveSubKeys = () => {
+  store.set('subKeys', [...subKeys]);
+  for (const k of subVoices.keys()) if (!subKeys.has(k)) subVoices.delete(k);
+  store.set('subVoices', [...subVoices]);
+};
+const subVoiceNow = (id) => (id === 'el' ? `${elVoiceName()}（${settings.elModel.replace(/^eleven_(multilingual_)?/, '')}）` : SUBS[id].voice());
+// どの声で作った話か。全部が予備の声なら、その声の名前を出す（Geminiで作ったように見せない）
+function madeLabel(profile, keys, isSaved) {
+  const saved = keys.filter(isSaved), sub = saved.filter((k) => subKeys.has(k));
+  if (!sub.length) return { label: voiceLabel(profile), note: '', ids: [] };
+  const ids = [...new Set(sub.map((k) => subKeys.get(k)))];
+  if (saved.length >= keys.length && sub.length === saved.length) {
+    const vs = [...new Set(sub.map((k) => subVoices.get(k) || ''))];
+    const label = ids.length === 1 ? `${SUBS[ids[0]]?.name || ids[0]}${vs.length === 1 && vs[0] ? `・${vs[0]}` : ''}` : subNames(ids);
+    return { label, note: `（全部${subNames(ids)}の声）`, ids, all: true };
+  }
+  return { label: `${voiceLabel(profile)} ＋ ${subNames(ids)}`, note: `（うち${sub.length}段落は${subNames(ids)}の声）`, ids };
+}
 const told = new Set();
 function tellStandIn(id, why) {
   if (told.has(`${geminiDay()}|${id}`)) return;
@@ -1493,6 +1512,7 @@ async function makeStandIn(text, signal, key, skip = [], why = '', main = 'gemin
       tellStandIn(id, why);
       if (id === 'el') loadElCredits();
       subKeys.set(key, id);
+      subVoices.set(key, subVoiceNow(id));
       saveSubKeys();
       cachePut(key, buf);
       return Object.assign(toBlob(buf), { via: `${SUBS[id].name}（予備）` });
@@ -3034,8 +3054,8 @@ async function renderHistory() {
     const nextAt = playing ? -1 : upNextIds().indexOf(d.id);
     if (nextAt >= 0) state.append(make('b', null, `次に聞く・${nextAt + 1}番目`), ' ・ ');
     state.append(`${pos.done ? '最後まで聞いた' : pos.i || pos.t ? `続き：${pos.i + 1}段落目から` : 'まだ聞いていない'} ・ `);
-    const subIds = d.keys.filter((k) => keys.has(k) && subKeys.has(k)).map((k) => subKeys.get(k)), subs = subIds.length;
-    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : '');
+    const made = madeLabel(d.profile, d.keys, (k) => keys.has(k));
+    if (saved >= d.n) state.append(make('b', 'ok', '✓ 端末に保存済み'), made.all ? '' : made.note);
     else state.append(job ? `端末に保存しています… ${job.done}/${d.n}段落` : queued ? `保存の順番待ち（${saved}/${d.n}段落）` : `端末に保存 ${saved}/${d.n}段落`);
     const nm = marks.filter((m) => m.doc === d.id).length;
     if (nm) state.append(` ・ ブックマーク${nm}件`);
@@ -3043,12 +3063,12 @@ async function renderHistory() {
     const fill = make('span');
     fill.style.width = `${pos.done ? 100 : Math.round((pos.i || 0) / d.n * 100)}%`;
     bar.append(fill);
-    open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${voiceLabel(d.profile)}${d.filter ? ' ・ 題名と本文のみ' : ''}`), state, bar);
+    open.append(make('span', 'hist-title', d.title || '（無題）'), make('span', 'hist-meta', `${fmtDate(d.updatedAt)} ・ ${fmtNum(d.chars)}字 ・ ${made.label}${d.filter ? ' ・ 題名と本文のみ' : ''}`), state, bar);
     const actions = make('div', 'hist-actions');
     const acts = [['copy', '原文をコピー'], ['rename', '名前を変える'], ['delete', '削除']];
     if (!playing) acts.unshift(nextAt >= 0 ? ['unnext', '次に聞くのをやめる'] : ['next', '次に聞く']);
     if (saved < d.n) acts.unshift(job || queued ? ['unsave', '保存をやめる'] : ['save', '端末に保存']);
-    else if (subs && d.profile.engine === 'gemini' && geminiModel()) acts.unshift(['remake', 'Geminiの声で作り直す']);
+    else if (made.ids.length && d.profile.engine === 'gemini' && geminiModel()) acts.unshift(['remake', 'Geminiの声で作り直す']);
     for (const [act, label] of acts) {
       const b = make('button', 'btn ghost small', label);
       b.type = 'button';
@@ -3609,7 +3629,7 @@ function renderOfflineBar() {
   btn.disabled = !id;
   btn.dataset.act = busy ? 'stop' : remake ? 'remake' : 'save';
   if (s >= n) {
-    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${subs ? `（うち${subs}段落は${subNames(subIds)}の声）` : ''}`;
+    $('#offlineText').innerHTML = `<b>✓ 端末に保存済み</b>${madeLabel(R.profile, R.chunkKeys, (k) => R.saved.has(k)).note}`;
     btn.textContent = `Geminiの声で作り直す（${subs}回）`;
   }
   else if (busy) { $('#offlineText').innerHTML = `端末に保存しています… <b>${s}</b>/${n}段落`; btn.textContent = 'やめる'; }
