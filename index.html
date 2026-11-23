@@ -1427,13 +1427,32 @@ const SUBS = {
 };
 // 先に使う声のあとは、無料のMicrosoft→有料のGrok→ElevenLabsの順（ElevenLabsが先頭なら ElevenLabs→Microsoft→Grok）
 const subOrder = () => [settings.subFirst, ...['ms', 'xai', 'el'].filter((id) => id !== settings.subFirst)];
+// 使えなかった予備の声は、その理由もいっしょに覚えておき、画面に出す（2026-11-24）。
+// 理由を覚えていなかった前の版の印は、一度だけ消して試し直す（そこで本当の理由が分かる）
+{ const o = store.get('subOut', null); if (o && !o.why) store.set('subOut', null); }
 function subsOut() { const o = store.get('subOut', null); return o && o.day === geminiDay() ? o.ids : []; }
-function markSubOut(id) { const ids = subsOut(); if (!ids.includes(id)) store.set('subOut', { day: geminiDay(), ids: [...ids, id] }); }
+function subWhy(id) { const o = store.get('subOut', null); return (o && o.day === geminiDay() && o.why && o.why[id]) || ''; }
+function markSubOut(id, why = '') {
+  const ids = subsOut();
+  if (ids.includes(id)) return;
+  const o = store.get('subOut', null), old = o && o.day === geminiDay() && o.why ? o.why : {};
+  store.set('subOut', { day: geminiDay(), ids: [...ids, id], why: { ...old, [id]: why } });
+  plogSafe(`予備の${SUBS[id].name}は今日はもう使わない：${why || '理由不明'}`);
+}
+// 予備の声が使えない理由（使い切った・断られた・キーが無い・オフ）
+function subState(id) {
+  const s = SUBS[id];
+  if (subsOut().includes(id)) { const w = subWhy(id); return w ? (w.includes(s.name) ? w : `${s.name}：${w}`) : `${s.name}は今日はもう使えません。`; }
+  if (!settings[`${id}Fallback`]) return `${s.name}は設定でオフです。`;
+  if (!(id === 'xai' ? settings.apiKey : settings[`${id}Key`])) return `${s.name}はキーが入っていません。`;
+  if (id === 'el' && !settings.elVoice) return 'ElevenLabsは声が選ばれていません。';
+  return '';
+}
 const nextSub = (skip = []) => subOrder().find((id) => SUBS[id].ready() && !subsOut().includes(id) && !skip.includes(id));
 // 今月この端末で作った字数（Microsoftは無料の上限も添える。ElevenLabsは契約で上限が違うので添えない）
 const subUse = (id) => `今月${fmtNum(usage()[id])}字${SUBS[id].free ? ` / ${fmtNum(SUBS[id].free)}字まで無料` : ''}`;
 const subNames = (ids) => [...new Set(ids)].map((id) => SUBS[id]?.name || id).join('・');
-const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の${subNames(subOrder().filter((id) => SUBS[id].ready()))}も、今日はもう使えません。Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
+const allOutError = () => new TtsError('quota', `今日のGeminiの無料枠を使い切りました。予備の声も使えません。${subOrder().map(subState).filter(Boolean).join('')}Geminiは毎日、日本時間の16〜17時ごろに回復します。`);
 // 代わりの声で作った段落は、Geminiの段落と同じ場所に保存して電波なしでも聞けるようにし、あとでGeminiの声で作り直せるよう、どの声で作ったかを覚えておく
 const subKeys = new Map(store.get('subKeys', []).map((x) => (Array.isArray(x) ? x : [x, 'ms'])));
 const saveSubKeys = () => store.set('subKeys', [...subKeys]);
@@ -1465,7 +1484,7 @@ async function makeStandIn(text, signal, key, skip = [], why = '', main = 'gemin
       // 通信できないときや中止したときは、次の声でも同じなので、そのまま伝える
       if (e.name === 'AbortError' || e.kind === 'net') throw e;
       if (e.kind === 'temp') skip.push(id); // 一時的な不調は、その日の分をあきらめず、この段落だけ次の声へ
-      else markSubOut(id);
+      else markSubOut(id, e.message);
       why = e.message;
       lastErr = e;
     }
