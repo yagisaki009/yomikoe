@@ -788,9 +788,22 @@ function hash(str) {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0') + '-' + str.length.toString(36);
 }
-let dbPromise = null;
+// 記録の関数は、まだ用意できていないうちに呼ばれても止まらないようにする
+function plogSafe(msg) { try { plog(msg); } catch { /* 起動の途中 */ } }
+// 保存の倉庫（IndexedDB）。iPhoneでは、アプリを長く開いたままにしたり裏に回したりすると、倉庫とのつながりが切れたり、
+// 開くのに失敗したりすることがある。前は一度切れるとそのままで、保存も読み出しもできず、順番待ちの話が黙って消えていた。
+// 切れたら、つなぎ直してもう一度だけ試す。それでもだめなときは dbBroken に時刻を残す（順番待ちは消さずに止めて知らせる）
+let dbPromise = null, dbConn = null, dbBroken = 0;
+function forgetDb(db, why) {
+  if (!db || dbConn !== db) return; // もう新しくつなぎ直している（または、もう忘れた）
+  dbConn = null;
+  dbPromise = null;
+  try { db.close(); } catch { /* もう閉じている */ }
+  plogSafe(`保存の倉庫につなぎ直す（${why}）`);
+}
 function openDb() {
   dbPromise ||= new Promise((resolve) => {
+    const fail = (why) => { dbPromise = null; plogSafe(`保存の倉庫を開けなかった（${why}）`); resolve(null); };
     try {
       const req = indexedDB.open('yomikoe', 2);
       req.onupgradeneeded = () => {
@@ -798,22 +811,50 @@ function openDb() {
         for (const name of ['audio', 'texts']) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
         if (!db.objectStoreNames.contains('docs')) db.createObjectStore('docs', { keyPath: 'id' });
       };
-      req.onsuccess = () => { req.result.onversionchange = () => req.result.close(); resolve(req.result); };
-      req.onerror = req.onblocked = () => resolve(null);
-    } catch { resolve(null); }
+      req.onsuccess = () => {
+        const db = req.result;
+        dbConn = db;
+        db.onversionchange = () => forgetDb(db, '別の画面が新しい形にした');
+        db.onclose = () => forgetDb(db, 'つながりが切れた');
+        resolve(db);
+      };
+      req.onerror = () => fail(req.error?.name || 'error');
+      req.onblocked = () => fail('blocked');
+    } catch (e) { fail(e?.name || String(e)); }
   });
   return dbPromise;
 }
-async function idbStore(name, mode, fn) {
+async function idbStore(name, mode, fn, again = false) {
   const db = await openDb();
-  if (!db) return null;
+  if (!db) {
+    if (!again) return idbStore(name, mode, fn, true);
+    dbBroken = Date.now();
+    return null;
+  }
   return new Promise((resolve) => {
+    let tx, req, settled = false;
+    const retry = (why) => {
+      forgetDb(db, why);
+      if (again) { dbBroken = Date.now(); resolve(null); } else resolve(idbStore(name, mode, fn, true));
+    };
     try {
-      const tx = db.transaction(name, mode);
-      const req = fn(tx.objectStore(name));
-      tx.oncomplete = () => resolve(req ? req.result : null);
-      tx.onerror = tx.onabort = () => resolve(null);
-    } catch { resolve(null); }
+      tx = db.transaction(name, mode);
+      req = fn(tx.objectStore(name));
+    } catch (e) {
+      // つながりが切れていると、ここで止まる（InvalidStateError など）
+      retry(e?.name || String(e));
+      return;
+    }
+    tx.oncomplete = () => { if (settled) return; settled = true; dbBroken = 0; resolve(req ? req.result : null); };
+    tx.onerror = tx.onabort = () => {
+      if (settled) return;
+      settled = true;
+      const err = tx.error?.name || '';
+      // つながりの問題ならつなぎ直す。容量が足りない（QuotaExceededError）などは、つなぎ直しても同じなので記録だけ
+      if (/UnknownError|InvalidStateError|TransactionInactiveError/.test(err)) { retry(err); return; }
+      if (err) plogSafe(`保存の倉庫の読み書きに失敗（${err}${tx.error?.message ? `：${tx.error.message}` : ''}）`);
+      resolve(null);
+    };
   });
 }
 const idb = (mode, fn) => idbStore('audio', mode, fn);
@@ -822,11 +863,20 @@ const docPut = (doc) => idbStore('docs', 'readwrite', (s) => s.put(doc));
 const docAll = async () => ((await idbStore('docs', 'readonly', (s) => s.getAll())) || []).sort((a, b) => b.updatedAt - a.updatedAt);
 const textGet = (id) => idbStore('texts', 'readonly', (s) => s.get(id));
 const cacheGet = (k) => idb('readonly', (s) => s.get(k));
-const cachePut = (k, buf) => idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then(() => {
-  noteSaved(k);
-  if (audioType(buf) === 'audio/wav') { wavKeys.add(k); saveWavKeys(); squeezeAll(); }
-  return trimCache();
-});
+// 書き込みの途中のもの（順番待ちは、1話を作り終えたら、これを待ってから「ちゃんと保存できたか」を確かめる）
+const putting = new Set();
+function cachePut(k, buf) {
+  const p = idb('readwrite', (s) => s.put({ buf, size: buf.byteLength, ts: Date.now() }, k)).then((r) => {
+    // 保存できなかったときは、保存済みの印を付けない（前は、保存できていなくても ✓ が付いていた）
+    if (r == null) { plogSafe(`段落の音声を保存できなかった（${(buf.byteLength / 1048576).toFixed(1)}MB）`); return; }
+    noteSaved(k);
+    if (audioType(buf) === 'audio/wav') { wavKeys.add(k); saveWavKeys(); squeezeAll(); }
+    return trimCache();
+  }).catch(() => {});
+  putting.add(p);
+  p.finally(() => putting.delete(p));
+  return p;
+}
 // 保存量が上限（設定で選ぶ）を超えたら、古いものから消して8割まで減らす
 const cacheLimit = () => settings.cacheGB * 1073741824;
 let trimmedAt = 0;
@@ -976,23 +1026,68 @@ const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: s
 const keyFor = (text, p = curProfile()) => hash(`${p.engine}|${p.voice}|${p.style}|ja|${text}`);
 const keyOf = (engine) => (engine === 'gemini' ? settings.geminiKey : settings.apiKey);
 
+// 返事が来ないまま止まった通信を打ち切る。iPhoneでは、裏に回ったあとなどに、通信が終わりも失敗もしないまま止まることがあり、
+// そのままだと、再生も順番待ちもずっと進まない（同じ段落を頼んだほうも、その出来上がりを待ち続ける）。
+// 返事の頭が first ミリ秒、中身が idle ミリ秒のあいだ届かなければ、通信の失敗として扱い、呼んだ側のやり直しに任せる。
+// 中身はここで受け取り終えるので、呼んだ側は ok・status・json()・text()・arrayBuffer() だけを使う
+async function fetchT(url, opts = {}, first = 180000, idle = 60000) {
+  const ctrl = new AbortController(), outer = opts.signal;
+  const fwd = () => ctrl.abort();
+  if (outer) { if (outer.aborted) ctrl.abort(); else outer.addEventListener('abort', fwd, { once: true }); }
+  let timer = 0, late = false;
+  const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => { late = true; ctrl.abort(); }, ms); };
+  try {
+    arm(first);
+    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    arm(idle);
+    let bytes;
+    if (res.body?.getReader) {
+      const reader = res.body.getReader(), parts = [];
+      let size = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        size += value.length;
+        arm(idle);
+      }
+      bytes = new Uint8Array(size);
+      let o = 0;
+      for (const p of parts) { bytes.set(p, o); o += p.length; }
+    } else {
+      bytes = new Uint8Array(await res.arrayBuffer());
+    }
+    const text = () => new TextDecoder().decode(bytes);
+    return { ok: res.ok, status: res.status, headers: res.headers, arrayBuffer: async () => bytes.buffer, text: async () => text(), json: async () => JSON.parse(text()) };
+  } catch (e) {
+    if (late && !outer?.aborted) {
+      plogSafe(`返事が来ないまま止まっていたので、打ち切った（${new URL(url, location.href).host}）`);
+      throw new TypeError('返事が来ないまま時間が過ぎました');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener('abort', fwd);
+  }
+}
 function requestXai(text, voice, signal) {
-  return fetch(`${API}/tts`, {
+  return fetchT(`${API}/tts`, {
     method: 'POST', signal,
     headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice_id: voice, language: 'ja', output_format: { codec: 'mp3', sample_rate: 24000, bit_rate: 128000 } }),
-  });
+  }, 180000);
 }
 // Geminiは表現タグの書き方が違うので置き換え、対応のないもの（ささやき等の囲み）は外して送る
 const GEMINI_TAGS = { pause: '<short pause>', 'long-pause': '<long pause>', breath: '<breath>', inhale: '<breath>', exhale: '<exhales>', sigh: '<sigh>', laugh: '<laugh>', chuckle: '<chuckle>', giggle: '<giggle>', cry: '<cry>', tsk: '<tsk>' };
 function requestGemini(text, voice, style, model, signal) {
   const part = { type: 'text', text: text.replace(TAG_RE, (t) => GEMINI_TAGS[t.slice(1, -1)] || '') };
   if (style) part.annotations = [{ type: 'speech_metadata', style }];
-  return fetch(`${GEMINI_API}/interactions`, {
+  // 1話分（2,000字ほど）は作るのに時間がかかるので、返事の頭は4分まで待つ
+  return fetchT(`${GEMINI_API}/interactions`, {
     method: 'POST', signal,
     headers: { 'x-goog-api-key': settings.geminiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, input: [{ type: 'user_input', content: [part] }], response_format: { type: 'audio' }, generation_config: { speech_config: [{ voice }] } }),
-  });
+  }, 240000);
 }
 // 返事の中から最後の音声データを探す
 function findAudio(node) {
@@ -1078,11 +1173,11 @@ async function requestMs(text, voice, signal) {
   for (let attempt = 0; ; attempt++) {
     let res;
     try {
-      res = await fetch(`${msBase()}/cognitiveservices/v1`, {
+      res = await fetchT(`${msBase()}/cognitiveservices/v1`, {
         method: 'POST', signal,
         headers: { 'Ocp-Apim-Subscription-Key': settings.msKey, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-24khz-96kbitrate-mono-mp3' },
         body: msSsml(text, voice),
-      });
+      }, 150000);
     } catch (e) {
       if (signal?.aborted) throw e;
       if (attempt < 3) { await sleep(1000 * 2 ** attempt); continue; }
@@ -1245,11 +1340,11 @@ async function makeElPart(k, body, voice) {
     let res, buf;
     try {
       // 音だけ（24kHzのPCM）で受け取り、つないでからWAVにする。保存した後でMP3に圧縮する（書き出しのときにGeminiと混ぜてもつながる）
-      res = await fetch(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=pcm_24000`, {
+      res = await fetchT(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=pcm_24000`, {
         method: 'POST',
         headers: { 'xi-api-key': settings.elKey, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      });
+      }, 150000);
       if (res.ok) buf = new Uint8Array(await res.arrayBuffer());
     } catch {
       const h = await waitElHistory(body, voice, t);
@@ -2334,6 +2429,9 @@ async function nextStory() {
   for (const id of upNextIds()) {
     const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
     if (doc && typeof text === 'string') return { doc, text };
+    // 保存の場所とのつながりが切れているだけなら、列から消さない（開き直せば、また読める）
+    if (dbBroken) { plog(`次の話を読み出せなかった（保存の場所とのつながりが切れている）${visMark()}`); return null; }
+    plog('次に聞く話が履歴に見つからないので、列から外した');
     dropUpNext(id);
   }
   return null;
@@ -3071,9 +3169,11 @@ function jobMeta(job) {
 }
 const saveQueue = () => store.set('saveQueue', [saver.job?.id, ...saver.queue].filter(Boolean));
 // 止まったことも覚えておき、同じ日にアプリを開き直したときは、「続ける」を押すまで待つ
-function setPaused(msg) {
+// sticky：同じ日にアプリを開き直しても止めたままにするか（無料枠を使い切ったときなど）。
+// 保存の場所のつながりの問題などは、開き直すと直ることが多いので、開き直したら自動で続ける
+function setPaused(msg, sticky = true) {
   saver.paused = msg;
-  store.set('savePaused', msg ? { day: geminiDay(), msg } : null);
+  store.set('savePaused', msg ? { day: geminiDay(), msg, sticky } : null);
 }
 function docChunks(doc, text) {
   const p = doc.profile;
@@ -3091,7 +3191,7 @@ function saveDoc(id, title) {
 function resumeSaver() {
   setPaused('');
   renderSaving();
-  if (!saver.job) runSaver();
+  runSaver(); // もう動いていれば何もしない
 }
 function stopSaving(id) {
   saver.queue = saver.queue.filter((q) => q !== id);
@@ -3103,72 +3203,115 @@ function stopSaving(id) {
 // 聞いている話の段落や書き出しを先に作れるよう、それらが作っているあいだは1つずつ作る
 const othersBusy = () => [...R.loads.keys()].some((i) => !R.urls.has(i)) || !!(exp && !exp.url);
 // 聞いている話が、段落ができるのを待って止まっているか。そのあいだは順番待ちを休んで、聞いている話を先に作る
-const playerStalled = () => R.wantPlay && R.waiting && !!R.chunks.length;
+// （待ちが2分を超えたら、順番待ちも動かす。聞いている話の待ちが長引いても、順番待ちがずっと止まらないように）
+const playerStalled = () => R.wantPlay && R.waiting && !!R.chunks.length && Date.now() - R.waitAt < 120000;
 let saverRunning = false;
 async function runSaver() {
   if (saverRunning) return;
   saverRunning = true;
   try { await saverLoop(); } finally { saverRunning = false; }
 }
+const DB_TROUBLE = '端末の保存の場所とのつながりが切れているようです。よみこえをいったん閉じて（アプリの切りかえ画面で上にはらう）、開き直してください。';
+// 列を止めて知らせる（この話は先頭に残し、消さない）
+function holdQueue(id, title, msg, kind = '') {
+  const storage = kind === 'db' || kind === 'save' || kind === 'unexpected';
+  if (id && !saver.queue.includes(id)) saver.queue.unshift(id);
+  saver.job = null;
+  saver.retries = 0;
+  plog(`順番待ち：止めた（${kind ? `${kind}：` : ''}${msg}）${visMark()}`);
+  setPaused(msg, !storage);
+  saveQueue();
+  renderSaving();
+  const rest = saver.queue.length - 1;
+  showNotice(`「${title}」の保存が止まりました。${msg}${storage ? '' : 'ここまでの段落は保存済みです。'}${rest > 0 ? `順番待ちの${rest}話も止めています。` : ''}「続ける」を押すと、残りだけを作ります。`,
+    ...(kind === 'nokey' || kind === 'auth' ? ['設定を開く', () => { hideNotice(); openSettings(); }] : ['続ける', () => { hideNotice(); resumeSaver(); }]));
+}
 async function saverLoop() {
   while (saver.queue.length && !saver.paused) {
     const id = saver.queue[0];
-    const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
-    const have = await cacheKeys();
-    if (saver.queue[0] !== id || saver.paused) continue;
-    saver.queue.shift();
-    if (!doc || typeof text !== 'string') { saveQueue(); continue; }
-    const todo = docChunks(doc, text).filter((c) => !have.has(keyFor(c.speech, doc.profile)));
-    const job = saver.job = { id, title: doc.title, n: doc.n, done: doc.n - todo.length, last: Date.now(), ctrl: new AbortController() };
-    saver.names.set(id, doc.title);
-    saveQueue();
-    renderSaving();
-    plog(`順番待ち：作り始めた（残り${todo.length}段落）${visMark()}`);
-    let next = 0;
-    const worker = async (w) => {
-      while (next < todo.length && !job.ctrl.signal.aborted) {
-        if ((w > 0 && othersBusy()) || playerStalled()) { await sleep(1000); continue; }
-        await synth(todo[next++].speech, job.ctrl.signal, doc.profile);
-        job.done++;
-        job.last = Date.now();
-        renderSaving();
-      }
-    };
+    let job = null;
+    // 思わぬ失敗があっても、黙って止まったままにしない（前は、ここで止まると、ずっと進まなくなることがあった）
     try {
-      await Promise.all(Array.from({ length: PARALLEL }, (_, w) => worker(w)));
-    } catch (e) {
-      job.ctrl.abort();
-      if (e.name !== 'AbortError') {
-        // この話を先頭に戻して、列を止める（無料枠を使い切ったなど、あとの話も同じ理由で作れないことが多いので）
-        saver.queue.unshift(id);
-        saver.job = null;
-        // ただし通信やGrokの一時的な不調なら、止めずに30秒・60秒・90秒待ってやり直す（続けて3回まで）
-        if (retryable(e) && saver.retries < 3) {
-          saver.retries++;
-          const wait = 30000 * saver.retries;
-          saver.retryAt = Date.now() + wait;
-          plog(`順番待ち：一時的な不調（${e.message}）。${wait / 1000}秒後にやり直す${visMark()}`);
-          saveQueue();
-          renderSaving();
-          await sleep(wait);
-          saver.retryAt = 0;
-          continue;
-        }
-        saver.retries = 0;
-        plog(`順番待ち：止めた（${e.kind || e.name}：${e.message}）${visMark()}`);
-        setPaused(e.message);
+      const [doc, text] = await Promise.all([docGet(id), textGet(id)]);
+      const have = await cacheKeys();
+      if (saver.queue[0] !== id || saver.paused) continue;
+      if (!doc || typeof text !== 'string') {
+        // 保存の場所とのつながりが切れているときは、消さずに止める（前は、ここで順番待ちの話が黙って消えていた）
+        if (dbBroken) { holdQueue(id, saver.names.get(id) || '（無題）', DB_TROUBLE, 'db'); return; }
+        plog('順番待ち：履歴に見つからない話を外した');
+        saver.queue.shift();
         saveQueue();
         renderSaving();
-        const rest = saver.queue.length - 1;
-        showNotice(`「${job.title}」の保存が止まりました。${e.message}ここまでの段落は保存済みです。${rest ? `順番待ちの${rest}話も止めています。` : ''}「続ける」を押すと、残りだけを作ります。`,
-          ...(e.kind === 'nokey' || e.kind === 'auth' ? ['設定を開く', () => { hideNotice(); openSettings(); }] : ['続ける', () => { hideNotice(); resumeSaver(); }]));
-        return;
+        continue;
       }
+      saver.queue.shift();
+      const chunks = docChunks(doc, text), keys = chunks.map((c) => keyFor(c.speech, doc.profile));
+      const todo = chunks.filter((c, i) => !have.has(keys[i]));
+      job = saver.job = { id, title: doc.title, n: chunks.length, done: chunks.length - todo.length, last: Date.now(), ctrl: new AbortController() };
+      saver.names.set(id, doc.title);
+      saveQueue();
+      renderSaving();
+      plog(`順番待ち：作り始めた（${chunks.length}段落のうち残り${todo.length}段落）${visMark()}`);
+      let next = 0;
+      const worker = async (w) => {
+        while (next < todo.length && !job.ctrl.signal.aborted) {
+          if ((w > 0 && othersBusy()) || playerStalled()) { await sleep(1000); continue; }
+          const c = todo[next++], t0 = Date.now();
+          const b = await synth(c.speech, job.ctrl.signal, doc.profile);
+          if (Date.now() - t0 > 1500) plog(`順番待ち：段落${chunks.indexOf(c) + 1}/${chunks.length} できた（${b?.via || '?'}・${Math.round((Date.now() - t0) / 1000)}秒）${visMark()}`);
+          job.done++;
+          job.last = Date.now();
+          renderSaving();
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: PARALLEL }, (_, w) => worker(w)));
+      } catch (e) {
+        job.ctrl.abort();
+        if (e.name !== 'AbortError') {
+          // この話を先頭に戻す
+          saver.queue.unshift(id);
+          saver.job = null;
+          // 通信やGrokの一時的な不調なら、止めずに30秒・60秒・90秒待ってやり直す（続けて3回まで）
+          if (retryable(e) && saver.retries < 3) {
+            saver.retries++;
+            const wait = 30000 * saver.retries;
+            saver.retryAt = Date.now() + wait;
+            plog(`順番待ち：一時的な不調（${e.message}）。${wait / 1000}秒後にやり直す${visMark()}`);
+            saveQueue();
+            renderSaving();
+            await sleep(wait);
+            saver.retryAt = 0;
+            continue;
+          }
+          // 無料枠を使い切ったなど、あとの話も同じ理由で作れないことが多いので、列を止める
+          holdQueue(id, job.title, e.message, e.kind || e.name);
+          return;
+        }
+      }
+      saver.job = null;
+      saveQueue();
+      if (!job.ctrl.signal.aborted) {
+        // 作り終えたら、本当に端末に保存できたかを確かめる（書き込みの途中のものは待つ）
+        await Promise.all([...putting]);
+        const have2 = await cacheKeys(), lost = keys.filter((k) => !have2.has(k)).length;
+        if (lost) {
+          plog(`順番待ち：作ったのに${lost}段落が保存されていなかった${visMark()}`);
+          holdQueue(id, job.title, dbBroken ? DB_TROUBLE : `作った音声のうち${lost}段落を、端末に保存できませんでした。iPhoneの空き容量が少ないかもしれません。設定の「保存の上限」を小さくするか、空き容量を増やしてください。`, 'save');
+          return;
+        }
+        saver.batchDone++;
+        saver.retries = 0;
+        noteDone(job);
+        plog(`順番待ち：1話保存できた${visMark()}`);
+        if (R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。`, '履歴を開く', () => { hideNotice(); showView('history'); });
+      }
+    } catch (e) {
+      job?.ctrl.abort();
+      plog(`順番待ち：思わぬ失敗（${e?.name || ''}：${e?.message || e}）`);
+      holdQueue(id, job?.title || saver.names.get(id) || '（無題）', `思わぬ失敗がありました（${e?.message || e}）。`, 'unexpected');
+      return;
     }
-    saver.job = null;
-    saveQueue();
-    if (!job.ctrl.signal.aborted) { saver.batchDone++; saver.retries = 0; noteDone(job); plog(`順番待ち：1話保存できた${visMark()}`); }
-    if (!job.ctrl.signal.aborted && R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。`, '履歴を開く', () => { hideNotice(); showView('history'); });
   }
   if (!saver.queue.length && !saver.job) saver.batchDone = 0;
   renderSaving();
@@ -3738,16 +3881,20 @@ $('#expClose').addEventListener('click', () => { expDlg.close(); exportClosed();
 expDlg.addEventListener('close', exportClosed);
 
 /* ---------- 再生の記録をコピー ---------- */
-function plogText() {
+async function plogText() {
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const subs = subOrder().filter((id) => SUBS[id].ready()).map((id) => SUBS[id].name).join('→') || 'なし';
   const model = settings.engine === 'gemini' ? (geminiModel() ? `${MODEL_NAME[geminiModel()]}が使える` : '今日の分は使い切り') : '';
+  let space = '不明';
+  try { const e = await navigator.storage?.estimate?.(); if (e) space = `${fmtNum(e.usage / 1048576)}MB使用 / 使える量${fmtNum(e.quota / 1048576)}MB`; } catch { /* 調べられない */ }
   return [
     'よみこえ 再生の記録',
     `書き出し：${hms(Date.now())}`,
     `端末：${navigator.userAgent}`,
     `開き方：${standalone ? 'ホーム画面のアイコンから' : 'ブラウザで'}`,
     `声：${ENGINE_NAME[settings.engine]}${model ? `（${model}）` : ''}・1話を1回で作る=${settings.saveCalls ? 'オン' : 'オフ'}・予備の順=${subs}・今日使えない予備=${subNames(subsOut()) || 'なし'}・話が終わったら次へ=${settings.autoNext ? 'オン' : 'オフ'}`,
+    `保存の場所：${space}・保存の上限${settings.cacheGB}GB・つながり=${dbBroken ? `おかしい（${hms(dbBroken)}）` : 'ふつう'}`,
+    `順番待ち：残り${saver.queue.length}話${saver.job ? `・作っている話 ${saver.job.done}/${saver.job.n}段落` : ''}${saver.paused ? `・止めている（${saver.paused}）` : ''}`,
     '',
     ...plogBuf,
   ].join('\n');
@@ -3761,14 +3908,24 @@ $('#plogCopy').addEventListener('click', (e) => copyRaw(e.currentTarget, plogTex
   plog(`アプリを開いた（${nav === 'reload' ? '読み込み直し' : nav === 'back_forward' ? '戻る' : '新しく'}）${a?.play ? `。前回は再生中のまま終わっていた（最後の印 ${hms(a.t)}・段落${a.idx + 1}/${a.n}・${a.vis === 'hidden' ? '画面は裏' : '画面は表'}・${a.src}）` : ''}`);
   store.set('alive', null);
 }
-document.addEventListener('visibilitychange', () => plog(document.visibilityState === 'hidden' ? '画面が裏になった（画面を消した・ほかのアプリへ）' : '画面が表に戻った'));
+document.addEventListener('visibilitychange', () => {
+  const show = document.visibilityState !== 'hidden';
+  plog(show ? `画面が表に戻った${saver.job ? `（順番待ち ${saver.job.done}/${saver.job.n}段落）` : ''}` : '画面が裏になった（画面を消した・ほかのアプリへ）');
+  if (!show) return;
+  // 戻ってきたら、保存の場所とのつながりを確かめ（切れていれば、つなぎ直す）、止まっている順番待ちを動かす
+  idbStore('docs', 'readonly', (s) => s.count()).then(() => { if (saver.queue.length && !saver.paused) runSaver(); });
+});
+addEventListener('online', () => { plog('ネットにつながった'); if (saver.queue.length && !saver.paused) runSaver(); });
 addEventListener('pagehide', (e) => { beat(true); plog(`アプリを閉じる合図（${e.persisted ? 'あとで戻れる' : '終わり'}）`); });
 // 前に開いていたときの待ちの列を、続きから作る
 saver.queue = store.get('saveQueue', []);
 if (saver.done.length) renderQueue();
 if (saver.queue.length) {
   const paused = store.get('savePaused', null);
-  if (paused?.day === geminiDay()) saver.paused = paused.msg;
+  // 無料枠を使い切ったときなどは、同じ日のうちは止めたまま。保存の場所の問題などは、開き直したら続ける
+  if (paused?.day === geminiDay() && paused.sticky !== false) saver.paused = paused.msg;
+  else if (paused) setPaused('');
+  plog(`順番待ち：${saver.queue.length}話が残っている${saver.paused ? `（止めたまま：${saver.paused}）` : '。続きから作る'}`);
   renderQueue();
   if (!saver.paused) setTimeout(runSaver, 1500);
 }
