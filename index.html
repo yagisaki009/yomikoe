@@ -537,6 +537,8 @@ input, select, textarea {
             <button type="button" id="elPreview" class="btn ghost small">試聴</button>
           </div>
           <label class="pick">モデル<select id="elModel"></select></label>
+          <label class="pick">文の終わりの間<select id="elGap"><option value="0">そのまま</option><option value="0.4">0.4秒以上</option><option value="0.7">0.7秒以上</option><option value="1">1秒以上</option><option value="1.4">1.4秒以上</option></select></label>
+          <p class="hint">声によっては、文と文の間がほとんど無く、せかせか聞こえます。「。」のあとの間が、ここで選んだ長さより短いときだけ、無音を足して広げます（もともと長い間はそのまま。段落の変わり目は2倍）。次に作る分から効きます。</p>
           <p id="elCredits" class="usage" hidden></p>
           <p id="elMsg" class="msg" hidden></p>
           <p class="hint">ElevenLabsは、無料プランなら月1万字ほど（1,500字の話で6〜7話）、有料プランなら契約した分まで使えます。有料プランで「使いすぎた分も払う」設定にしていると料金が増えるので、キーを作るときに上限を入れておくと安心です。キーに「History」の「Read」の許可も付けておくと、通信が切れたときに作り直さず、ElevenLabsの履歴から受け取ります（同じ部分でクレジットを二重に引かれません）。声は、キーを入れると一覧が出ます。日本語の声は、ElevenLabsのサイトの「Voices」で自分の一覧に追加すると、ここに出ます（一部の声は有料プランだけ）。キーはこの端末の中にだけ保存され、ElevenLabs以外には送られません。キーの作り方は<a href="https://github.com/yagisaki009/yomikoe#elevenlabs" target="_blank" rel="noopener">説明書き</a>にあります。</p>
@@ -726,7 +728,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', subFirst: 'el', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', elGap: 0.7, subFirst: 'el', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -1248,6 +1250,67 @@ function pcmWav(pcm, rate = 24000) {
   out.set(pcm, head.length);
   return out.buffer;
 }
+// ElevenLabsの声によっては、文と文の間がほとんど無い（2026-11-24、本人の「006」の声）。
+// 文字ごとの時刻（with-timestamps）で「。」のあとを見つけ、設定の長さ（段落の変わり目は2倍）に足りない分だけ無音を足す。
+// もともと長い間はそのまま。言葉の途中（っ など）には足さない
+const EL_RATE = 24000, EL_GAP_SKIP = /[\s」』）)。！？!?…]/, EL_GAP_END = /[。！？!?]/;
+const elGapSec = () => Number(settings.elGap) || 0;
+const elTsOff = new Set(); // 文字ごとの時刻を断られたモデル（開き直すまで、ふつうに受け取る）
+// t0〜t1秒のあたりで、いちばん静かなところ（足しても「プツッ」とならない所）
+function quietestAt(s, t0, t1) {
+  const F = 240, a = Math.max(0, Math.floor((t0 - 0.05) * EL_RATE / F)), b = Math.min(Math.floor(s.length / F) - 1, Math.ceil((t1 + 0.05) * EL_RATE / F));
+  let best = Math.min(s.length, Math.round(t1 * EL_RATE)), bestE = Infinity;
+  for (let f = a; f <= b; f++) {
+    let e = 0;
+    for (let j = f * F; j < (f + 1) * F; j++) e += Math.abs(s[j]);
+    if (e < bestE) { bestE = e; best = f * F; }
+  }
+  let at = best, m = Infinity;
+  for (let j = best; j < Math.min(s.length, best + 240); j++) if (Math.abs(s[j]) < m) { m = Math.abs(s[j]); at = j; }
+  return at;
+}
+function insertSilence(pcm, adds) {
+  if (!adds.length) return pcm;
+  const s = new Int16Array(pcm.slice(0, pcm.length & ~1).buffer);
+  adds.sort((x, y) => x.at - y.at);
+  const out = new Int16Array(s.length + adds.reduce((a, b) => a + b.n, 0));
+  let from = 0, o = 0;
+  for (const a of adds) { out.set(s.subarray(from, a.at), o); o += a.at - from + a.n; from = a.at; }
+  out.set(s.subarray(from), o);
+  return new Uint8Array(out.buffer);
+}
+function widenByAlign(pcm, al, sec) {
+  const ch = al?.characters, st = al?.character_start_times_seconds, en = al?.character_end_times_seconds;
+  if (!sec || !ch?.length || !st || !en || pcm.length < 4) return pcm;
+  const s = new Int16Array(pcm.slice(0, pcm.length & ~1).buffer), adds = [];
+  for (let i = 0; i < ch.length; i++) {
+    if (!EL_GAP_END.test(ch[i])) continue;
+    // 句点のあとの 」 や改行、[short pause] などの指示を飛ばして、次にしゃべる文字を探す
+    let j = i + 1, para = false;
+    while (j < ch.length) {
+      if (ch[j] === '\n') para = true;
+      if (EL_GAP_SKIP.test(ch[j])) j++;
+      else if (ch[j] === '[') { while (j < ch.length && ch[j] !== ']') j++; j++; }
+      else break;
+    }
+    if (j >= ch.length) break;
+    let k = i - 1;
+    while (k >= 0 && EL_GAP_SKIP.test(ch[k])) k--;
+    if (k < 0) { i = j - 1; continue; }
+    const have = Math.max(0, st[j] - en[k]), want = sec * (para ? 2 : 1);
+    if (have < want) adds.push({ at: quietestAt(s, en[k], st[j]), n: Math.round((want - have) * EL_RATE) });
+    i = j - 1;
+  }
+  return insertSilence(pcm, adds);
+}
+// 端の静かな長さ（サンプル数）。部分と部分のつなぎめの間を測る
+function edgeQuiet(pcm, fromEnd) {
+  const s = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length >> 1);
+  let n = 0;
+  if (fromEnd) for (let j = s.length - 1; j >= 0 && Math.abs(s[j]) < 350; j--) n++;
+  else for (let j = 0; j < s.length && Math.abs(s[j]) < 350; j++) n++;
+  return n;
+}
 async function requestEl(text, signal, voice = settings.elVoice, model = settings.elModel) {
   if (!settings.elKey) throw new TtsError('nokey', 'ElevenLabsのキーが入っていません。');
   if (!voice) throw new TtsError('auth', 'ElevenLabsの声が選ばれていません。設定で選んでください。');
@@ -1261,9 +1324,21 @@ async function requestEl(text, signal, voice = settings.elVoice, model = setting
   };
   await untilAbort(Promise.all(Array.from({ length: EL_PARALLEL }, worker)), signal);
   if (pcm.length !== parts.length || pcm.some((b) => !b)) throw new DOMException('中止しました', 'AbortError');
-  const all = new Uint8Array(pcm.reduce((a, b) => a + b.length, 0));
+  // 部分と部分のつなぎめ（文の切れ目）にも、設定の長さの間を空ける。もとの文で改行をまたぐなら段落の変わり目
+  const sec = elGapSec(), pads = new Array(pcm.length).fill(0);
+  if (sec) {
+    let pos = 0;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const at = text.indexOf(parts[i], pos), end = at < 0 ? -1 : at + parts[i].length;
+      if (end >= 0) pos = end;
+      const para = end >= 0 && /^[^\S\n]*\n/.test(text.slice(end));
+      const want = Math.round(sec * (para ? 2 : 1) * EL_RATE), have = edgeQuiet(pcm[i], true) + edgeQuiet(pcm[i + 1], false);
+      pads[i] = Math.max(0, want - have) * 2;
+    }
+  }
+  const all = new Uint8Array(pcm.reduce((a, b) => a + b.length, 0) + pads.reduce((a, b) => a + b, 0));
   let o = 0;
-  for (const b of pcm) { all.set(b, o); o += b.length; }
+  pcm.forEach((b, i) => { all.set(b, o); o += b.length + pads[i]; });
   // つないだ音声は呼んだ側が保存するので、部分は消しておく
   idb('readwrite', (s) => { for (const t of parts) s.delete(elPartKey(t, voice, model)); return null; });
   return pcmWav(all);
@@ -1356,15 +1431,22 @@ async function makeElPart(k, body, voice) {
   for (let attempt = 0; ; attempt++) {
     const t = Date.now();
     markElSent(k, t);
-    let res, buf;
+    let res, buf, ts = false, align = null;
     try {
       // 音だけ（24kHzのPCM）で受け取り、つないでからWAVにする。保存した後でMP3に圧縮する（書き出しのときにGeminiと混ぜてもつながる）
-      res = await fetchT(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=pcm_24000`, {
+      // 文の間を広げるときは、文字ごとの時刻も受け取る（値段は同じ）。そのモデルで使えなければ、ふつうの受け取り方に戻す
+      ts = elGapSec() > 0 && !elTsOff.has(body.model_id);
+      res = await fetchT(`${elBase()}/v1/text-to-speech/${encodeURIComponent(voice)}${ts ? '/with-timestamps' : ''}?output_format=pcm_24000`, {
         method: 'POST',
         headers: { 'xi-api-key': settings.elKey, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       }, 150000);
-      if (res.ok) buf = new Uint8Array(await res.arrayBuffer());
+      if (res.ok && ts) {
+        const j = await res.json(), bin = atob(j.audio_base64 || '');
+        buf = new Uint8Array(bin.length);
+        for (let x = 0; x < bin.length; x++) buf[x] = bin.charCodeAt(x);
+        align = j.alignment || j.normalized_alignment || null;
+      } else if (res.ok) buf = new Uint8Array(await res.arrayBuffer());
     } catch {
       const h = await waitElHistory(body, voice, t);
       if (h.pcm) return keepElPart(k, h.pcm);
@@ -1375,7 +1457,10 @@ async function makeElPart(k, body, voice) {
     if (res.ok) {
       if (buf.length < 2) throw new TtsError('bad', 'ElevenLabsから音声が返ってきませんでした。');
       // 念のため、WAVで返ってきたときは音の部分だけを使う
-      return keepElPart(k, audioType(buf.buffer) === 'audio/wav' ? wavParts(buf).data : buf.subarray(0, buf.length & ~1));
+      const raw = audioType(buf.buffer) === 'audio/wav' ? wavParts(buf).data : buf.subarray(0, buf.length & ~1);
+      let out = raw;
+      try { out = widenByAlign(raw, align, elGapSec()); } catch (e) { plogSafe(`ElevenLabsの間を広げられなかった：${e.message}`); }
+      return keepElPart(k, out);
     }
     // 長く待ったあとのエラー（中継のサーバーが待ちきれずに返す504など）は、ElevenLabsが作り終えているかもしれないので、先に履歴を見る
     if (res.status >= 500 && Date.now() - t > 20000) {
@@ -1388,6 +1473,12 @@ async function makeElPart(k, body, voice) {
     try { const d = JSON.parse(raw).detail; code = String(d?.status || d?.code || ''); detail = String(d?.message || (typeof d === 'string' ? d : '')); } catch { detail = raw.slice(0, 140); }
     if (/quota_exceeded/.test(code + raw)) throw new TtsError('subquota', 'ElevenLabsの今月のクレジットを使い切りました。');
     if ((res.status === 429 || res.status >= 500) && attempt < 4) { await sleep(2000 * 2 ** attempt); continue; }
+    // 文字ごとの時刻の受け取り方を断られたら（そのモデルでは使えない等）、ふつうの受け取り方でやり直す（作られていないので二重に引かれない）
+    if (ts && (res.status === 400 || res.status === 404 || res.status === 422) && !/voice|quota|api_key|permission/i.test(code + detail)) {
+      elTsOff.add(body.model_id);
+      plogSafe(`ElevenLabsの文字ごとの時刻は使えなかった（${res.status} ${code}）。ふつうに受け取る`);
+      continue;
+    }
     if (/unusual_activity/.test(code + raw)) throw new TtsError('auth', 'ElevenLabsが、無料プランでの利用を止めました（いつもと違う使い方と判断されたようです）。');
     if (/invalid_api_key|missing_permissions/.test(code + raw) || res.status === 401) throw new TtsError('auth', 'ElevenLabsのキーが正しくないか、キーに「Text to Speech」の許可が付いていません。');
     if (res.status === 402 || /paid|subscription|tier/i.test(code + detail)) throw new TtsError('auth', 'この声かモデルは、ElevenLabsの有料プランでないと使えません。設定で別の声を選んでください。');
@@ -2822,6 +2913,7 @@ function fillEl() {
   const m = $('#elModel');
   if (!m.options.length) for (const [id, name] of Object.entries(EL_MODELS)) m.add(new Option(name, id));
   m.value = settings.elModel;
+  $('#elGap').value = String(settings.elGap);
 }
 async function loadElVoices() {
   fillEl();
@@ -2893,6 +2985,7 @@ function renderElCredits() {
 }
 $('#elVoice').addEventListener('change', (e) => { settings.elVoice = e.target.value; saveSettings(); clearSubOut('el'); });
 $('#elModel').addEventListener('change', (e) => { settings.elModel = e.target.value; saveSettings(); clearSubOut('el'); });
+$('#elGap').addEventListener('change', (e) => { settings.elGap = Number(e.target.value); saveSettings(); });
 $('#resetUsage').addEventListener('click', () => { store.set('usage', { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 }); renderUsage(); });
 $('#clearCache').addEventListener('click', async () => {
   if (!confirm('保存した音声と履歴（ブックマークも）をすべて削除しますか？もう一度聞くときは、また料金がかかります。')) return;
