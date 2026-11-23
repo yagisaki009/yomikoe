@@ -691,7 +691,7 @@ const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural':
 const MS_REGIONS = { japaneast: '東日本（Japan East）', japanwest: '西日本（Japan West）', eastasia: '香港（East Asia）', southeastasia: 'シンガポール（Southeast Asia）', koreacentral: '韓国（Korea Central）', eastus: '米国東部（East US）', westus2: '米国西部2（West US 2）', westeurope: '西ヨーロッパ（West Europe）' };
 const MS_FREE = 500000;
 // Geminiを使い切ったときのElevenLabsの声（無料プランは月1万字ほど、有料プランは契約した分）
-const EL_MODELS = { eleven_multilingual_v2: 'Multilingual v2（安定）', eleven_v3: 'v3（表現が豊か）' };
+const EL_MODELS = { eleven_multilingual_v2: 'Multilingual v2（安定）', eleven_v3: 'v3（表現が豊か）', eleven_v4: 'v4（いちばん新しい）' };
 const VOICES = ['eve', 'ara', 'rex', 'sal', 'leo', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas'];
 const TAG_RE = /\[(?:pause|long-pause|hum-tune|laugh|chuckle|giggle|cry|tsk|tongue-click|lip-smack|breath|inhale|exhale|sigh)\]|<\/?(?:soft|whisper|loud|build-intensity|decrease-intensity|higher-pitch|lower-pitch|slow|fast|sing-song|singing|emphasis)>/g;
 const SPEAKABLE = /[\p{L}\p{N}]/u;
@@ -1213,10 +1213,13 @@ async function requestMs(text, voice, signal) {
     throw new TtsError('bad', `Microsoftの声を作れませんでした（${res.status}）。${detail.slice(0, 140)}`);
   }
 }
-// ElevenLabsの間の指示：Multilingual v2は <break>、v3は [short pause] などの書き方。それ以外の表現タグは外す
+// ElevenLabsの間の指示：Multilingual v2は <break>、v3・v4は [short pause] などの書き方。それ以外の表現タグは外す
+// v4（2026-09-28公開）も v3 と同じ [ ] の書き方の指示を聞く。値段は v2・v3 と同じ
+const EL_V3_TAGS = { pause: '[short pause]', 'long-pause': '[long pause]', sigh: '[sighs]', laugh: '[laughs]', breath: '[breathes]' };
 const EL_TAGS = {
   eleven_multilingual_v2: { pause: '<break time="0.6s" />', 'long-pause': '<break time="1.5s" />' },
-  eleven_v3: { pause: '[short pause]', 'long-pause': '[long pause]', sigh: '[sighs]', laugh: '[laughs]', breath: '[breathes]' },
+  eleven_v3: EL_V3_TAGS,
+  eleven_v4: EL_V3_TAGS,
 };
 const elText = (text, model) => text.replace(TAG_RE, (t) => EL_TAGS[model]?.[t.slice(1, -1)] || '');
 const elVoiceName = () => store.get('elVoices', []).find((v) => v.id === settings.elVoice)?.name || 'ElevenLabs';
