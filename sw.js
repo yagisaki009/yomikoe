@@ -21,6 +21,8 @@ self.addEventListener('fetch', (e) => {
   // フォントと、音声をMP3に圧縮する部品（lamejs）も手元に置いておく
   const isLib = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com' || url.hostname === 'cdn.jsdelivr.net';
   if (url.origin !== location.origin && !isLib) return;
+  // Macの受け付け係への問い合わせ（/api/）には手を出さない（ここで取り直すと、合言葉が落ちてしまう）
+  if (/\/api\//.test(url.pathname)) return;
   // アプリのファイルは毎回GitHubに新しい版がないか確かめる（変わっていなければ通信はわずか）。
   // ブラウザの一時保存に任せると、更新が届くまで最大10分かかるため
   const fresh = isLib ? fetch(req) : fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' });

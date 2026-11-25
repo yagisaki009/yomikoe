@@ -3872,7 +3872,7 @@ async function macPing() {
     const res = await macFetch('/api/ping', {}, 15000);
     if (res.status === 401) { el.textContent = '合言葉が違います'; return; }
     const p = await res.json();
-    const w = p.worker === 0 || p.worker === false ? '作る係はまだ動いていません' : p.worker < 90 ? '作る係も動いています' : `作る係が止まっているようです（${Math.round(p.worker / 60)}分前から）`;
+    const w = p.worker == null || p.worker === false ? '作る係はまだ動いていません' : p.worker >= 90 ? `作る係が止まっているようです（${Math.round(p.worker / 60)}分前から）` : p.ready === false ? '作る係は動いていますが、設定をまだ受け取れていません' : '作る係も動いています';
     el.textContent = `Macにつながりました。${w}。${p.jobs ? `Macにある話：${p.jobs}話。` : ''}${p.paused ? `Macで止まっています（${p.paused}）` : ''}`;
     if (settings.macOn) macSendConfig().catch(() => {});
   } catch (e) { el.textContent = `Macにつながりません（${e.name === 'AbortError' ? '返事がない' : e.message}）`; }
@@ -3888,10 +3888,12 @@ async function runMacWorker() {
   document.title = 'よみこえ（Macの作る係）';
   plog('Macの作る係を始めた');
   const started = Date.now(), wavSeen = new Map();
-  let cfgAt = 0, pausedAt = 0;
+  let cfgAt = 0, pausedAt = 0, cfgStatus = 200;
   for (;;) {
     try {
       const cr = await macFetch('/api/config');
+      if (!cr.ok && cr.status !== cfgStatus) plog(`Macの作る係：設定を受け取れない（${cr.status}）`);
+      cfgStatus = cr.status;
       if (cr.ok) {
         const c = await cr.json();
         if (c.at && c.at !== cfgAt) {
@@ -3935,7 +3937,7 @@ async function runMacWorker() {
       }
       // 止まっていたら（無料枠を使い切った等）、10分ごとにやり直す
       if (saver.paused) { pausedAt ||= Date.now(); if (Date.now() - pausedAt > 600000) { pausedAt = 0; hideNotice(); resumeSaver(); } } else pausedAt = 0;
-      await macFetch('/api/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current: saver.job?.id || '', done: saver.job ? { [saver.job.id]: saver.job.done } : {}, paused: saver.paused }) });
+      await macFetch('/api/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current: saver.job?.id || '', done: saver.job ? { [saver.job.id]: saver.job.done } : {}, paused: saver.paused, ready: !!cfgAt }) });
       // 6時間ごと、手が空いていたら読み込み直して、新しい版にする
       if (!saver.job && !saver.queue.length && Date.now() - started > 6 * 3600000) { location.reload(); return; }
     } catch (e) { plogSafe(`Macの作る係：${e.message}`); }
