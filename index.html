@@ -620,6 +620,17 @@ input, select, textarea {
     </section>
 
     <section class="group">
+      <h3>Macで作る</h3>
+      <label class="check"><input id="macOn" type="checkbox">順番待ちの話は、Macに作ってもらう</label>
+      <div class="field-row">
+        <input id="macLink" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Macの合言葉（https:// で始まる）" aria-label="Macの合言葉">
+        <button type="button" class="btn ghost small" data-reveal="macLink">表示</button>
+      </div>
+      <p id="macState" class="usage" hidden></p>
+      <p class="hint">「順番待ちに入れる」で入れた話を、いつも電源の入っているMacが作ってためておきます。iPhoneは、よみこえを開いたときに、できた声を受け取るだけです（画面を消しても、よみこえを閉じても、Macは作り続けます）。声の作り方（Gemini・予備の声・文の終わりの間など）は、このiPhoneの設定をMacに送って、同じにします（キーもMacの中にだけしまいます）。Macにつながらないときは、今までどおりiPhoneで作ります。</p>
+    </section>
+
+    <section class="group">
       <h3>読み方の辞書</h3>
       <textarea id="dict" rows="4" placeholder="怪異=かいい&#10;御手洗=みたらい"></textarea>
       <p class="hint">1行に「書き方=読み方」で登録すると、その読みで発音します。小説の「漢字《かんじ》」形式のルビも読みとして使います。</p>
@@ -728,13 +739,13 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', elGap: 0.7, subFirst: 'el', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, macOn: false, macLink: '', engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', elGap: 0.7, subFirst: 'el', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
 // MicrosoftのHDの声は無料のプランで使えなかったので、シオリにする
 if (settings.msVoice.includes('DragonHD')) settings.msVoice = 'ja-JP-ShioriNeural';
-const saveSettings = () => store.set('settings', settings);
+const saveSettings = () => { store.set('settings', settings); try { macConfigSoon(); } catch { /* 起動の途中 */ } };
 // 速さの初期値を1.0から0.9にした（2026-11-11）。前の初期値のまま（1.0）の端末は、一度だけ0.9にする。自分で選んだ速さは変えない
 if (!store.get('rate09', false)) { if (settings.rate === 1) { settings.rate = 0.9; saveSettings(); } store.set('rate09', true); }
 // Grokを予備の声に加えた（2026-11-16）。予備の順は「Microsoft（無料）→Grok→ElevenLabs」で、Microsoftもオンにする（本人の希望）。
@@ -1570,7 +1581,11 @@ const saveSubKeys = () => {
   for (const k of subVoices.keys()) if (!subKeys.has(k)) subVoices.delete(k);
   store.set('subVoices', [...subVoices]);
 };
-const subVoiceNow = (id) => (id === 'el' ? `${elVoiceName()}（${settings.elModel.replace(/^eleven_(multilingual_)?/, '')}）` : SUBS[id].voice());
+const subVoiceNow = (id) => {
+  if (id !== 'el') return SUBS[id].voice();
+  const name = elVoiceName(), model = settings.elModel.replace(/^eleven_(multilingual_)?/, '');
+  return name === 'ElevenLabs' ? `（${model}）` : `${name}（${model}）`; // 声の名前が分からないときは、モデルだけ
+};
 // どの声で作った話か。全部が予備の声なら、その声の名前を出す（Geminiで作ったように見せない）
 function madeLabel(profile, keys, isSaved) {
   const saved = keys.filter(isSaved), sub = saved.filter((k) => subKeys.has(k));
@@ -1578,7 +1593,8 @@ function madeLabel(profile, keys, isSaved) {
   const ids = [...new Set(sub.map((k) => subKeys.get(k)))];
   if (saved.length >= keys.length && sub.length === saved.length) {
     const vs = [...new Set(sub.map((k) => subVoices.get(k) || ''))];
-    const label = ids.length === 1 ? `${SUBS[ids[0]]?.name || ids[0]}${vs.length === 1 && vs[0] ? `・${vs[0]}` : ''}` : subNames(ids);
+    const v = vs.length === 1 ? vs[0].replace(/^ElevenLabs(?=（)/, '') : '';
+    const label = ids.length === 1 ? `${SUBS[ids[0]]?.name || ids[0]}${v ? `${v.startsWith('（') ? '' : '・'}${v}` : ''}` : subNames(ids);
     return { label, note: `（全部${subNames(ids)}の声）`, ids, all: true };
   }
   return { label: `${voiceLabel(profile)} ＋ ${subNames(ids)}`, note: `（うち${sub.length}段落は${subNames(ids)}の声）`, ids };
@@ -1630,6 +1646,8 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
   const job = (async () => {
     const hit = await cacheGet(key);
     if (hit && hit.buf) return Object.assign(toBlob(hit.buf), { via: '保存してあった音声' });
+    // Macに頼んである話の段落は、Macでできるのを待って受け取る（iPhoneで二重に作らない）
+    if (macOn() && macHasKey(key)) { const b = await macWaitKey(key, signal); if (b) return b; }
     try { return await makeSpeech(text, signal, p, key); }
     catch (e) {
       // Geminiの枠が切れたとき、またはGrokが落ちたときは、予備の声で続ける
@@ -2778,6 +2796,9 @@ function openSettings(msg) {
   $('#scriptOnly').checked = settings.scriptOnly;
   $('#autoNext').checked = settings.autoNext;
   $('#bgSave').checked = settings.bgSave;
+  $('#macOn').checked = settings.macOn;
+  $('#macLink').value = settings.macLink;
+  macPing();
   $('#geminiFallback').checked = settings.geminiFallback;
   $('#saveCalls').checked = settings.saveCalls;
   $('#plogCount').textContent = `記録 ${plogBuf.length}行（新しい${PLOG_MAX}行まで）`;
@@ -3353,6 +3374,7 @@ const agoOf = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s <
 // いま作っている話の様子。「最後に段落ができてから」の時間も出して、止まっていないと分かるようにする
 function jobMeta(job) {
   const idle = Date.now() - job.last, p = job.n ? Math.floor((job.done / job.n) * 100) : 100;
+  if (job.mac) return `Macで作っています… ${job.done}/${job.n}段落を受け取りました（${p}%）${job.macMsg ? `。${job.macMsg}` : ''}`;
   return `作っています… ${job.done}/${job.n}段落（${p}%）・最後に進んだのは${agoOf(idle)}${playerStalled() ? '。いまは、聞いている話の続きを先に作っています' : idle > 45000 ? '。時間がかかっています（混み合っているときは、自動でやり直しています）' : ''}`;
 }
 const saveQueue = () => store.set('saveQueue', [saver.job?.id, ...saver.queue].filter(Boolean));
@@ -3383,6 +3405,7 @@ function resumeSaver() {
   primeKeep(); // 画面を消しても作り続ける（保存を頼むのは、いつもタップから）
 }
 function stopSaving(id) {
+  macForget(id, true);
   saver.queue = saver.queue.filter((q) => q !== id);
   if (!saver.queue.length) setPaused('');
   if (saver.job?.id === id) saver.job.ctrl.abort();
@@ -3454,7 +3477,9 @@ async function saverLoop() {
         }
       };
       try {
-        await Promise.all(Array.from({ length: PARALLEL }, (_, w) => worker(w)));
+        // Macに頼んだ話は、ここでは作らず、Macでできた声を受け取る
+        if (macOn() && macJobs()[id]) await pullFromMac(job, keys, have, doc, text);
+        else await Promise.all(Array.from({ length: PARALLEL }, (_, w) => worker(w)));
       } catch (e) {
         job.ctrl.abort();
         if (e.name !== 'AbortError') {
@@ -3492,7 +3517,8 @@ async function saverLoop() {
         saver.batchDone++;
         saver.retries = 0;
         noteDone(job);
-        plog(`順番待ち：1話保存できた${visMark()}`);
+        if (job.mac) macGot(id);
+        plog(`順番待ち：1話保存できた${job.mac ? '（Macで作った声）' : ''}${visMark()}`);
         if (R.doc?.id !== id) showNotice(`「${job.title}」を端末に保存しました。`, '履歴を開く', () => { hideNotice(); showView('history'); });
       }
     } catch (e) {
@@ -3526,7 +3552,8 @@ const playerActive = () => R.wantPlay || !!R.gap;
 const saverBusy = () => !saver.paused && (saver.queue.length > 0 || !!saver.job);
 // 作っているのに15分進まないときは、電池を使い続けないよう止める
 const saverStuck = () => !!saver.job && Date.now() - saver.job.last > 15 * 60000;
-const keepNeeded = () => settings.bgSave && saverBusy() && !saverStuck() && !playerActive();
+// Macに作ってもらうときは、iPhoneで作り続ける必要がないので鳴らさない
+const keepNeeded = () => settings.bgSave && saverBusy() && !saverStuck() && !playerActive() && !macOn();
 function keepPlay(why) {
   keepWant = true;
   if (!keepAudio.paused) { updateKeepMedia(); return; }
@@ -3563,7 +3590,7 @@ function syncKeepSafe() { try { syncKeep(); } catch { /* 起動の途中 */ } }
 // 保存に関わるボタンをタップしたとき（タップの中なので、鳴らし始められる）
 let keepGrace = 0;
 function primeKeep() {
-  if (!settings.bgSave || playerActive()) return;
+  if (!settings.bgSave || playerActive() || macOn()) return;
   keepBlocked = false;
   keepGrace = Date.now() + 5000;
   setTimeout(syncKeepSafe, 5200); // 作るものがなかったら（もう保存してあった等）、そのあとで止める
@@ -3601,7 +3628,7 @@ function updateKeepMedia() {
 }
 // 順番待ちの欄：画面を消しても作り続けているか。止まっていたら、始めるボタンを出す
 function renderKeep() {
-  const show = settings.bgSave && saverBusy() && !playerActive();
+  const show = settings.bgSave && saverBusy() && !playerActive() && !macOn();
   const on = !keepAudio.paused;
   $('#keepRow').hidden = !show;
   if (!show) return;
@@ -3689,8 +3716,11 @@ async function queueText(text) {
   const have = await cacheKeys();
   if (doc.keys.every((k) => have.has(k))) return { doc, saved: true };
   const ids = [saver.job?.id, ...saver.queue].filter(Boolean), at = ids.indexOf(doc.id);
+  // Macで作るときは、話をMacに送る（つながらなければ、このiPhoneで作る）
+  let mac = '';
+  if (macOn()) mac = macJobs()[doc.id] || await sendToMac(doc, text) ? 'ok' : 'fail';
   saveDoc(doc.id, doc.title);
-  return { doc, ahead: at < 0 ? ids.length : at };
+  return { doc, ahead: at < 0 ? ids.length : at, mac };
 }
 $('#queueBtn').addEventListener('click', async () => {
   const text = textEl.value;
@@ -3705,8 +3735,214 @@ $('#queueBtn').addEventListener('click', async () => {
   // 聞いている話があれば、その話が終わったら続けて流れる
   const after = settings.autoNext && R.chunks.length && R.doc?.id !== r.doc.id ? '聞いている話のあとに、続けて流れます。' : '';
   showNotice(r.saved ? `「${r.doc.title}」は、もう端末に保存してあります。${after || '履歴から聞けます。'}`
+    : r.mac === 'ok' ? `「${r.doc.title}」をMacに頼みました。画面を消しても、よみこえを閉じても、Macが作っておきます。次に開いたときに受け取ります。${after}`
+    : r.mac === 'fail' ? `Macにつながらなかったので、「${r.doc.title}」はこのiPhoneで作ります。${after}`
     : !r.ahead ? `「${r.doc.title}」を作り始めました。${after || 'できたら履歴から聞けます。'}` : `「${r.doc.title}」を順番待ちに入れました。前の${r.ahead}話ができたら、続けて作ります。${after}`);
 });
+/* ---------- Macで作る（2026-11-25） ---------- */
+// iPhoneは、画面を消すとWebアプリを休ませるので、順番待ちの話は、いつも電源の入っているMacに作ってもらう。
+// Macでは「受け付け係」（Mac作り場/server.py）と、画面なしのChromeで動く、このアプリの「作る係」（?worker=1）が動いている。
+// 合言葉は「https://…/yomikoe#合言葉」の形で、設定に1回貼る
+const WORKER_MODE = new URLSearchParams(location.search).has('worker');
+function macParts() {
+  const s = WORKER_MODE ? store.get('macLinkW', '') : settings.macLink;
+  const m = /^(https?:\/\/[^#\s]+)#([A-Za-z0-9]{16,})$/.exec(String(s || '').trim());
+  return m ? { base: m[1].replace(/\/+$/, ''), token: m[2] } : null;
+}
+function macOn() { return !WORKER_MODE && !!settings.macOn && !!macParts(); }
+async function macFetch(path, opts = {}, ms = 20000) {
+  const m = macParts();
+  if (!m) throw new TtsError('nokey', 'Macの合言葉が入っていません。');
+  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), ms), outer = opts.signal;
+  const stop = () => ctrl.abort();
+  outer?.addEventListener('abort', stop, { once: true });
+  try {
+    return await fetch(`${m.base}${path}`, { ...opts, signal: ctrl.signal, headers: { 'X-Yomikoe-Token': m.token, ...(opts.headers || {}) } });
+  } finally { clearTimeout(timer); outer?.removeEventListener('abort', stop); }
+}
+// Macに頼んだ話：{ 履歴の印: [段落の印…] }
+function macJobs() { return store.get('macJobs', {}); }
+function macHasKey(k) { return Object.values(macJobs()).some((ks) => ks.includes(k)); }
+function macForget(id, tellMac = false) {
+  const m = macJobs();
+  if (!m[id]) return;
+  delete m[id];
+  store.set('macJobs', m);
+  if (tellMac) macFetch(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+}
+// 全部受け取った話は、Macから消してもらう
+function macGot(id) {
+  macForget(id);
+  macFetch('/api/got', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {});
+}
+// Macに送る設定（キー・声・辞書など）。合言葉そのものは送らない
+function macSettings() { const s = { ...settings }; delete s.macLink; delete s.macOn; return s; }
+async function macSendConfig() {
+  const res = await macFetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: macSettings(), elVoices: store.get('elVoices', []), bases: store.get('macBases', null) || {} }) });
+  if (!res.ok) throw new Error(res.status === 401 ? '合言葉が違います' : `Macの返事 ${res.status}`);
+}
+let macCfgTimer = 0;
+function macConfigSoon() {
+  if (!macOn()) return;
+  clearTimeout(macCfgTimer);
+  macCfgTimer = setTimeout(() => macSendConfig().catch((e) => plogSafe(`Macに設定を送れなかった（${e.message}）`)), 3000);
+}
+async function sendToMac(doc, text) {
+  try {
+    await macSendConfig();
+    const res = await macFetch('/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: doc.id, doc, text }) });
+    if (!res.ok) throw new Error(res.status === 401 ? '合言葉が違います' : `Macの返事 ${res.status}`);
+    const m = macJobs();
+    m[doc.id] = doc.keys;
+    store.set('macJobs', m);
+    plog('Macに話を頼んだ');
+    return true;
+  } catch (e) {
+    plog(`Macに話を頼めなかった（${e.message}）。このiPhoneで作る`);
+    return false;
+  }
+}
+// Macでできた段落を1つ受け取って、この端末に保存する
+async function macTake(k, signal) {
+  const r = await macFetch(`/api/audio/${encodeURIComponent(k)}`, { signal }, 180000);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`Macの返事 ${r.status}`);
+  const buf = await r.arrayBuffer(), sub = r.headers.get('X-Sub') || '';
+  if (sub) { subKeys.set(k, sub); const v = decodeURIComponent(r.headers.get('X-Sub-Voice') || ''); if (v) subVoices.set(k, v); saveSubKeys(); }
+  else if (subKeys.delete(k)) saveSubKeys();
+  await cachePut(k, buf);
+  return buf;
+}
+// 順番待ち：Macでできた段落から順に受け取る。全部そろうまで、10秒ごとに見に行く（よみこえを開いているあいだ）
+async function pullFromMac(job, keys, have, doc, text) {
+  job.mac = true;
+  const want = keys.filter((k) => !have.has(k)), got = new Set(), sig = job.ctrl.signal;
+  while (!sig.aborted && !want.every((k) => got.has(k))) {
+    let st = null;
+    try {
+      const res = await macFetch(`/api/status?ids=${encodeURIComponent(job.id)}`, { signal: sig });
+      if (res.status === 401) throw new TtsError('auth', 'Macの合言葉が違います。設定の「Macで作る」で入れ直してください。');
+      if (res.ok) st = await res.json();
+    } catch (e) { if (e.kind === 'auth') throw e; }
+    if (sig.aborted) break;
+    if (!st) { job.macMsg = 'Macにつながりません。少し待って、もう一度見に行きます'; renderSaving(); await sleep(15000); continue; }
+    if (!st.jobs[job.id]) {
+      // Macに無い（2週間たって消えた等）ので、頼み直す
+      if (!(await sendToMac(doc, text))) { await sleep(15000); continue; }
+      continue;
+    }
+    for (const k of st.jobs[job.id].ready) {
+      if (!want.includes(k) || got.has(k) || sig.aborted) continue;
+      try { if (await macTake(k, sig)) { got.add(k); job.done++; job.last = Date.now(); renderSaving(); } } catch (e) { if (sig.aborted) break; plog(`Macから受け取れなかった（${e.message}）`); }
+    }
+    if (want.every((k) => got.has(k))) break;
+    job.macMsg = !st.worker ? 'Macの作る係が止まっているようです' : st.paused ? `Macで止まっています（${st.paused}）。止まった理由が直ると、Macが自分でやり直します` : '';
+    renderSaving();
+    await sleep(10000);
+  }
+  job.macMsg = '';
+}
+// 再生：Macに頼んである段落は、Macでできるのを待って受け取る（つながらないときは、このiPhoneで作る）
+async function macWaitKey(k, signal) {
+  let fails = 0;
+  const t0 = Date.now();
+  while (!signal?.aborted && Date.now() - t0 < 20 * 60000) {
+    try {
+      const buf = await macTake(k, signal);
+      if (buf) { plog('段落をMacから受け取った'); return Object.assign(toBlob(buf), { via: 'Macで作った声' }); }
+      fails = 0;
+    } catch (e) {
+      if (signal?.aborted) break;
+      if (++fails >= 3) { plog(`Macから受け取れないので、このiPhoneで作る（${e.message}）`); return null; }
+    }
+    if (!macHasKey(k)) return null;
+    await sleep(5000);
+  }
+  if (signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+  return null;
+}
+// 設定の「Macで作る」の様子
+async function macPing() {
+  const el = $('#macState');
+  if (WORKER_MODE || !settings.macLink.trim()) { el.hidden = true; return; }
+  el.hidden = false;
+  if (!macParts()) { el.textContent = '合言葉の形が違います（https:// で始まり、# のあとに合言葉が続く形です）'; return; }
+  el.textContent = 'Macに確かめています…';
+  try {
+    const res = await macFetch('/api/ping', {}, 15000);
+    if (res.status === 401) { el.textContent = '合言葉が違います'; return; }
+    const p = await res.json();
+    const w = p.worker === 0 || p.worker === false ? '作る係はまだ動いていません' : p.worker < 90 ? '作る係も動いています' : `作る係が止まっているようです（${Math.round(p.worker / 60)}分前から）`;
+    el.textContent = `Macにつながりました。${w}。${p.jobs ? `Macにある話：${p.jobs}話。` : ''}${p.paused ? `Macで止まっています（${p.paused}）` : ''}`;
+    if (settings.macOn) macSendConfig().catch(() => {});
+  } catch (e) { el.textContent = `Macにつながりません（${e.name === 'AbortError' ? '返事がない' : e.message}）`; }
+}
+$('#macOn').addEventListener('change', (e) => { settings.macOn = e.target.checked; saveSettings(); macPing(); renderSaving(); });
+$('#macLink').addEventListener('change', (e) => { settings.macLink = e.target.value.trim(); saveSettings(); macPing(); });
+
+/* ---------- Macの作る係（?worker=1。画面なしのChromeで動かす） ---------- */
+// 受け付け係から、iPhoneの設定と、まだ声がそろっていない話を受け取り、ふつうの順番待ちと同じように作って、できた声を受け付け係に渡す
+async function runMacWorker() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get('mac') && h.get('token')) { store.set('macLinkW', `${h.get('mac')}#${h.get('token')}`); history.replaceState(null, '', location.pathname + location.search); }
+  document.title = 'よみこえ（Macの作る係）';
+  plog('Macの作る係を始めた');
+  const started = Date.now(), wavSeen = new Map();
+  let cfgAt = 0, pausedAt = 0;
+  for (;;) {
+    try {
+      const cr = await macFetch('/api/config');
+      if (cr.ok) {
+        const c = await cr.json();
+        if (c.at && c.at !== cfgAt) {
+          cfgAt = c.at;
+          Object.assign(settings, c.settings || {}, { bgSave: false, autoNext: false, macOn: false, macLink: '' });
+          store.set('settings', settings);
+          if (c.elVoices?.length) store.set('elVoices', c.elVoices);
+          // 確かめ用の宛先の差し替え（変わったら読み込み直すと効く）
+          let changed = false;
+          for (const k of ['geminiBase', 'elBase', 'msBase', 'apiBase']) {
+            const v = c.bases?.[k] || null;
+            if (v !== store.get(k, null)) { if (v) store.set(k, v); else localStorage.removeItem(`yk.${k}`); changed = true; }
+          }
+          if (changed) { location.reload(); return; }
+          store.set('subOut', null); // 設定が変わったら（キーを入れ直した等）、使えなかった予備の声も試し直す
+          plog('Macの作る係：設定を受け取った');
+        }
+      }
+      if (cfgAt) {
+        const wr = await macFetch('/api/work');
+        const jobs = wr.ok ? (await wr.json()).jobs : [];
+        const have = await cacheKeys(), live = new Set(jobs.map((j) => j.id));
+        // iPhoneで「やめる」を押した話（受け付け係から消えた話）は、作るのをやめる
+        for (const id of [saver.job?.id, ...saver.queue].filter(Boolean)) if (!live.has(id)) { plog('Macの作る係：やめた話を外した'); stopSaving(id); }
+        for (const j of jobs) {
+          if (saver.job?.id === j.id || saver.queue.includes(j.id)) continue;
+          if (j.missing.every((k) => have.has(k))) continue; // もう作ってある（送るだけ）
+          await docPut(j.doc);
+          await idbStore('texts', 'readwrite', (s) => s.put(j.text, j.id));
+          saveDoc(j.id, j.doc.title);
+        }
+        // できた段落を送る（MP3に縮めてから。縮められないまま2分たったら、そのまま送る）
+        for (const j of jobs) for (const k of j.missing) {
+          if (!have.has(k)) continue;
+          if (wavKeys.has(k)) { if (!wavSeen.has(k)) wavSeen.set(k, Date.now()); if (Date.now() - wavSeen.get(k) < 120000) continue; }
+          const hit = await cacheGet(k);
+          if (!hit?.buf) continue;
+          const res = await macFetch(`/api/audio/${encodeURIComponent(k)}`, { method: 'PUT', body: hit.buf, headers: { 'X-Sub': subKeys.get(k) || '', 'X-Sub-Voice': encodeURIComponent(subVoices.get(k) || '') } }, 180000);
+          if (!res.ok) plog(`Macの作る係：声を渡せなかった（${res.status}）`);
+        }
+      }
+      // 止まっていたら（無料枠を使い切った等）、10分ごとにやり直す
+      if (saver.paused) { pausedAt ||= Date.now(); if (Date.now() - pausedAt > 600000) { pausedAt = 0; hideNotice(); resumeSaver(); } } else pausedAt = 0;
+      await macFetch('/api/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current: saver.job?.id || '', done: saver.job ? { [saver.job.id]: saver.job.done } : {}, paused: saver.paused }) });
+      // 6時間ごと、手が空いていたら読み込み直して、新しい版にする
+      if (!saver.job && !saver.queue.length && Date.now() - started > 6 * 3600000) { location.reload(); return; }
+    } catch (e) { plogSafe(`Macの作る係：${e.message}`); }
+    await sleep(5000);
+  }
+}
+
 // 読み上げ画面：段落ごとの印と、全体の保存の様子
 function noteSaved(k) {
   if (!R.chunkKeys.includes(k) || R.saved.has(k)) return;
@@ -4224,6 +4460,9 @@ renderSleep();
 scheduleEstimate();
 // 前に保存したWAVは、起動して少し落ち着いてから1つずつMP3に変える
 setTimeout(async () => { if (!store.get('wavScanned', false)) await findOldWav(); squeezeAll(); }, 3000);
+// Macの作る係として開かれたときは、受け付け係の仕事を始める。iPhoneでMacを使うときは、設定をMacにそろえておく
+if (WORKER_MODE) runMacWorker();
+else if (macOn()) setTimeout(() => macSendConfig().catch((e) => plogSafe(`Macに設定を送れなかった（${e.message}）`)), 2000);
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
