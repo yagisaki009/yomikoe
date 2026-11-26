@@ -303,6 +303,7 @@ input, select, textarea {
 .check input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
 .seg label { position: relative; padding: 8px 6px; border-radius: 9px; text-align: center; font-size: 15px; line-height: 1.35; cursor: pointer; }
+.seg label.wide { grid-column: 1 / -1; }
 .seg label:has(input:checked) { background: var(--surface); font-weight: 700; box-shadow: 0 1px 3px rgb(0 0 0 / .14); }
 .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); }
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
@@ -495,7 +496,14 @@ input, select, textarea {
       <div class="seg" role="radiogroup" aria-label="音声の種類">
         <label><input type="radio" name="engine" value="gemini">Gemini（Google）<small>無料・1日の回数に上限</small></label>
         <label><input type="radio" name="engine" value="xai">Grok（xAI）<small>文字数に応じて有料</small></label>
+        <label class="wide"><input type="radio" name="engine" value="vv">VOICEVOX（Macで作る）<small>無料・回数の上限なし</small></label>
       </div>
+    </section>
+
+    <section class="group" data-engine="vv">
+      <h3>VOICEVOX</h3>
+      <p id="vvState" class="usage" hidden></p>
+      <p class="hint">いつも電源の入っているMacの中で、VOICEVOXが声を作ります。料金も、1日の回数の上限もありません。下の「Macで作る」に合言葉が入っていれば使えます（このiPhoneで聞き始めた話も、Macが作って送ります）。「順番待ちに入れる」で入れた話は、「Macで作る」をオンにしておくと、よみこえを閉じてもMacが作っておきます。60分の話なら、Macが10〜15分ほどで作ります。聞くだけなら表記はいりませんが、動画などで使うときは「VOICEVOX:冥鳴ひまり」のように名前を書きます。</p>
     </section>
 
     <section class="group" data-engine="gemini">
@@ -697,7 +705,9 @@ const GEMINI_VOICES = { Achernar: ['f', 'やわらか'], Achird: ['m', '親し�
 // 無料枠は声のモデルごとに1日の回数が決まっている。いつものモデルを使い切ったら、同じ声・同じ指示が使える軽いモデルで続ける
 const GEMINI_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
 const MODEL_NAME = { 'gemini-3.8-flash-tts': '3.8 Flash', 'gemini-3.8-flash-lite-tts': '3.8 Flash Lite' };
-const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI' };
+const ENGINE_NAME = { gemini: 'Gemini', xai: 'xAI', vv: 'VOICEVOX' };
+// VOICEVOX（2026-11-26）：Macの中で作る無料の声。聞きくらべで選んでもらった2人（番号はVOICEVOXの声の番号）
+const VV_VOICES = { 14: '冥鳴ひまり', 31: 'No.7（読み聞かせ）' };
 // Geminiを全部使い切ったときの代わり：Microsoft（Azure）の声。無料のプラン（F0）なら月50万字まで無料で、超えると止まるだけ
 // （HDの声は、無料のプランでは作れなかったので入れていない）
 const MS_VOICES = { 'ja-JP-NanamiNeural': ['f', 'ナナミ'], 'ja-JP-AoiNeural': ['f', 'アオイ'], 'ja-JP-MayuNeural': ['f', 'マユ'], 'ja-JP-ShioriNeural': ['f', 'シオリ'], 'ja-JP-KeitaNeural': ['m', 'ケイタ'], 'ja-JP-DaichiNeural': ['m', 'ダイチ'], 'ja-JP-NaokiNeural': ['m', 'ナオキ'], 'ja-JP-MasaruMultilingualNeural': ['m', 'マサル'] };
@@ -713,15 +723,16 @@ const SPEAKABLE = /[\p{L}\p{N}]/u;
 // 区切り方が変わると保存済みの音声を使い回せないので、読み上げごとにどの版で区切ったかを覚えておく
 // 版3は、題名だけ・最後の数十字だけで1回使わないよう、小さい回は次の文で埋め、短い残りは前の回にまとめる
 // 版4は、無料枠が1日10回ほどしかないので、1回目を250字にして、1,500字の話を2回で作る（2回目は1回目と同時に作り始める）
+// VOICEVOX（vv）はGrokと同じ大きさで区切る（回数の上限がないので、すぐ鳴るよう小さめ）
 const CHUNKING = {
-  1: { first: [80, 250], xai: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } },
-  2: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 1500, max: 1800 } },
-  3: { first: [80, 250, 900], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
-  4: { first: [250], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
+  1: { first: [80, 250], xai: { target: 400, max: 800 }, vv: { target: 400, max: 800 }, gemini: { target: 700, max: 1200 } },
+  2: { first: [80, 250, 900], xai: { target: 400, max: 800 }, vv: { target: 400, max: 800 }, gemini: { target: 1500, max: 1800 } },
+  3: { first: [80, 250, 900], xai: { target: 400, max: 800 }, vv: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
+  4: { first: [250], xai: { target: 400, max: 800 }, vv: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
   // 版5（設定の「回数を節約」）：最初の短い回も作らず、2,000字ほどまでの話を1回で作る。鳴るまでは、話を作り終えるのを待つ
-  5: { first: [], xai: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
+  5: { first: [], xai: { target: 400, max: 800 }, vv: { target: 400, max: 800 }, gemini: { target: 2000, max: 2300 }, pack: true },
 };
-const CHUNK_VERSION = { xai: 1, gemini: 4 };
+const CHUNK_VERSION = { xai: 1, vv: 1, gemini: 4 };
 const chunkVersion = (engine) => (engine === 'gemini' && settings.saveCalls ? 5 : CHUNK_VERSION[engine]);
 const AHEAD = 3, PARALLEL = 2;
 const CHARS_PER_MIN = 330;
@@ -739,7 +750,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('yk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const savedSettings = store.get('settings', {});
-const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, macOn: false, macLink: '', engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', elGap: 0.7, subFirst: 'el', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
+const settings = Object.assign({ cacheGB: 3, volume: 1, muted: false, scriptOnly: true, readAfterword: false, autoNext: true, bgSave: true, macOn: false, macLink: '', engine: 'gemini', geminiKey: '', geminiVoice: 'Kore', geminiStyle: '落ち着いた声で、物語を朗読するように', geminiFallback: true, saveCalls: true, elFallback: true, elKey: '', elVoice: '', elModel: 'eleven_multilingual_v2', elGap: 0.7, subFirst: 'el', xaiFallback: true, msFallback: true, msCalm: true, msKey: '', msRegion: 'japaneast', msVoice: 'ja-JP-NanamiNeural', apiKey: '', voice: 'eve', vvVoice: '14', rate: 0.9, budget: 1000, fx: 150, price: 15, dict: '' }, savedSettings);
 // 以前のGoogle Cloud版の設定から移す（キーはGemini APIでは使えないので引き継がない）
 if (settings.engine === 'google') { settings.engine = 'gemini'; settings.geminiVoice = savedSettings.googleVoice || settings.geminiVoice; }
 for (const k of ['googleKey', 'googleVoice', 'googleFreeOnly']) delete settings[k];
@@ -754,8 +765,11 @@ if (!store.get('msFirst', false)) { settings.subFirst = 'ms'; settings.msFallbac
 // 予備の順を「ElevenLabs→Microsoft（無料）→Grok」にした（2026-11-23・本人の希望）。Geminiを使い切ったら、まずElevenLabsで続ける。
 // 一度だけ。このあと設定の「先に使う声」で選び直したものは変えない
 if (!store.get('elFirst', false)) { settings.subFirst = 'el'; settings.elFallback = true; saveSettings(); store.set('elFirst', true); }
-const curVoice = () => (settings.engine === 'gemini' ? settings.geminiVoice : settings.voice);
-const curKey = () => (settings.engine === 'gemini' ? settings.geminiKey : settings.apiKey);
+const VOICE_SETTING = { gemini: 'geminiVoice', xai: 'voice', vv: 'vvVoice' };
+const curVoice = () => settings[VOICE_SETTING[settings.engine] || 'voice'];
+// VOICEVOXはキーのかわりに、Macの合言葉があれば使える
+const curKey = () => keyOf(settings.engine);
+const needKeyMsg = () => (settings.engine === 'vv' ? 'VOICEVOXの声は、Macで作ります。下の「Macで作る」に、Macの合言葉を入れてください。' : `はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`);
 // 動作確認のときだけ宛先を差し替えられるようにしてある
 const API = store.get('apiBase', 'https://api.x.ai/v1');
 const GEMINI_API = store.get('geminiBase', 'https://generativelanguage.googleapis.com/v1beta');
@@ -766,8 +780,8 @@ const elBase = () => store.get('elBase', '') || 'https://api.elevenlabs.io';
 const monthKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 function usage() {
   const u = store.get('usage', null);
-  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0 };
-  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0, el: u.el ?? 0, ms: u.ms ?? 0 };
+  if (!u || u.month !== monthKey()) return { month: monthKey(), xai: 0, gemini: 0, el: 0, ms: 0, vv: 0 };
+  return { month: u.month, xai: u.xai ?? u.chars ?? 0, gemini: u.gemini ?? 0, el: u.el ?? 0, ms: u.ms ?? 0, vv: u.vv ?? 0 };
 }
 function addUsage(engine, n) { const u = usage(); u[engine] = Math.max(0, u[engine] + n); store.set('usage', u); renderUsage(); }
 const costYen = (u) => u.xai * settings.price / 1e6 * settings.fx;
@@ -1053,7 +1067,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 声の組み合わせ（サービス・声・雰囲気）。同じ文章でも組み合わせが違えば別の音声になる
 const curProfile = () => ({ engine: settings.engine, voice: curVoice(), style: settings.engine === 'gemini' ? settings.geminiStyle.trim() : '', chunk: chunkVersion(settings.engine) });
 const keyFor = (text, p = curProfile()) => hash(`${p.engine}|${p.voice}|${p.style}|ja|${text}`);
-const keyOf = (engine) => (engine === 'gemini' ? settings.geminiKey : settings.apiKey);
+const keyOf = (engine) => (engine === 'gemini' ? settings.geminiKey : engine === 'vv' ? (macParts() ? 'mac' : '') : settings.apiKey);
 
 // 返事が来ないまま止まった通信を打ち切る。iPhoneでは、裏に回ったあとなどに、通信が終わりも失敗もしないまま止まることがあり、
 // そのままだと、再生も順番待ちもずっと進まない（同じ段落を頼んだほうも、その出来上がりを待ち続ける）。
@@ -1662,8 +1676,52 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
   making.set(key, job);
   try { return await job; } finally { if (making.get(key) === job) making.delete(key); }
 }
+// VOICEVOX（無料）：iPhoneからも、Macの作る係からも、Macの受け付け係（Mac作り場/server.py）に頼む。
+// 受け付け係が、Macに入っているVOICEVOXを起こして、文ごとに作ってつないだWAVを返す（ここでMP3に縮めて保存する）
+function requestVv(text, voice, signal) {
+  const m = macParts();
+  const t = text.replace(/\[long-pause\]/g, '\n').replace(TAG_RE, '');
+  return fetchT(`${m.base}/api/vv`, {
+    method: 'POST', signal,
+    headers: { 'X-Yomikoe-Token': m.token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: t, speaker: Number(voice) }),
+  }, 150000);
+}
+async function makeVv(text, signal, p, key) {
+  if (!macParts()) throw new TtsError('nokey', 'VOICEVOXの声は、Macで作ります。設定の「Macで作る」に、Macの合言葉を入れてください。');
+  const n = text.length;
+  addUsage('vv', n);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      let res;
+      try {
+        res = await requestVv(text, p.voice, signal);
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        if (attempt < 3) { await sleep(2000 * 2 ** attempt); continue; }
+        throw new TtsError('net', 'Macにつながりませんでした。Macの電源が入っているか、インターネットにつながっているかを確かめてください。');
+      }
+      if (res.ok) {
+        const buf = await res.arrayBuffer();
+        if (subKeys.delete(key)) saveSubKeys();
+        cachePut(key, buf);
+        return Object.assign(toBlob(buf), { via: 'VOICEVOX（Mac）' });
+      }
+      if (res.status === 401) throw new TtsError('auth', 'Macの合言葉が違います。設定の「Macで作る」で入れ直してください。');
+      if (res.status >= 500 && attempt < 3) { await sleep(3000 * 2 ** attempt); continue; }
+      let why = '';
+      try { why = (await res.json()).error || ''; } catch { /* 返事が読めない */ }
+      if (res.status === 404) throw new TtsError('bad', 'MacがVOICEVOXの声に、まだ対応していません。Macの受け付け係を新しくしてください。');
+      throw new TtsError(res.status >= 500 ? 'temp' : 'bad', `MacのVOICEVOXで声を作れませんでした（${res.status}）。${why}`);
+    }
+  } catch (e) {
+    addUsage('vv', -n);
+    throw e;
+  }
+}
 async function makeSpeech(text, signal, p, key) {
   const { engine, voice } = p;
+  if (engine === 'vv') return makeVv(text, signal, p, key);
   if (!keyOf(engine)) throw new TtsError('nokey', `${ENGINE_NAME[engine]}のAPIキーが入っていません。`);
   const n = text.length;
   if (!overBudgetOk && costYen(usage()) + extraYen(n, engine) > settings.budget) throw new TtsError('budget', `今月の上限（${fmtNum(settings.budget)}円）に達しました。`);
@@ -1975,7 +2033,7 @@ async function renderEstimate() {
   $('#resumeBtn').hidden = !resumable;
   if (resumable) $('#resumeBtn').textContent = `続きから（${pos.i + 1}段落目）`;
   const u = usage();
-  const used = settings.engine === 'gemini' ? geminiDayLine() : `今月 ${fmtYen(costYen(u))} / ${fmtNum(settings.budget)}円`;
+  const used = settings.engine === 'gemini' ? geminiDayLine() : settings.engine === 'vv' ? 'VOICEVOXはMacの中で作るので、何話でも無料です' : `今月 ${fmtYen(costYen(u))} / ${fmtNum(settings.budget)}円`;
   if (!total) { $('#estimate').textContent = `文章を入れると、読み上げ時間と料金の目安が出ます。${used}`; return; }
   const keys = await cacheKeys();
   const fresh = chunks.reduce((a, c) => a + (keys.has(keyFor(c.speech, profile)) ? 0 : c.chars), 0);
@@ -1986,6 +2044,7 @@ async function renderEstimate() {
   const needed = chunks.filter((c) => !keys.has(keyFor(c.speech, profile))).length;
   const cost = settings.engine === 'gemini'
     ? (!needed ? '<b>✓ 端末に保存済み</b>（回数を使いません）' : !geminiModel() && nextSub() ? `${SUBS[nextSub()].name}の声で作る分 約<b>${fmtNum(fresh)}</b>字（${SUBS[nextSub()].free ? '無料' : SUBS[nextSub()].cost || 'クレジットを使います'}）` : `Geminiに送る回数 約<b>${needed}</b>回（無料）`)
+    : settings.engine === 'vv' ? (!needed ? '<b>✓ 端末に保存済み</b>' : 'Macで作る（<b>無料</b>）')
     : `料金の目安 <b>${fmtYen(yen)}</b>${note}`;
   $('#estimate').innerHTML = `<b>${fmtNum(text.length)}</b>字 ・ 約<b>${fmtDur(mins)}</b> ・ ${cost}${skipped}<br>${used}`;
 }
@@ -2761,7 +2820,7 @@ async function findDoc(text) {
 }
 $('#startBtn').addEventListener('click', async () => {
   const text = textEl.value;
-  if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  if (!curKey()) { openSettings(needKeyMsg()); return; }
   if (R.chunks.length && sessionSig(text, settings.dict, readFilterFor(text)) === R.sig) {
     showView('read');
     if (!R.wantPlay) togglePlay();
@@ -2773,7 +2832,7 @@ $('#startBtn').addEventListener('click', async () => {
 });
 $('#resumeBtn').addEventListener('click', async () => {
   const pos = store.get('pos', null);
-  if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  if (!curKey()) { openSettings(needKeyMsg()); return; }
   hideNotice();
   unlock(audio);
   const text = textEl.value;
@@ -2828,7 +2887,7 @@ function openSettings(msg) {
   renderCache();
   loadVoices();
   setDlg.showModal();
-  if (!curKey()) $(settings.engine === 'gemini' ? '#geminiKey' : '#apiKey').focus();
+  if (!curKey()) $(settings.engine === 'gemini' ? '#geminiKey' : settings.engine === 'vv' ? '#macLink' : '#apiKey').focus();
 }
 function renderEngine() {
   for (const r of document.querySelectorAll('input[name="engine"]')) r.checked = r.value === settings.engine;
@@ -3038,7 +3097,7 @@ function renderUsage() {
   const now = model && model !== GEMINI_MODELS[0] ? `・今は${MODEL_NAME[model]}` : sub ? `・今は${SUBS[sub].name}の声` : '';
   const subs = subOrder().filter((id) => id !== 'xai' && ((id === 'el' ? settings.elKey : settings.msKey) || u[id]))
     .map((id) => `${SUBS[id].name} ${subUse(id)}${id === 'el' && elSub?.limit ? `・${elCreditsText()}` : ''}<br>`).join('');
-  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
+  t.innerHTML = `Gemini 今月${fmtNum(u.gemini)}字・今日${geminiToday().n}回（無料）${now}<br>${subs}Grok ${fmtNum(u.xai)}字<br>${u.vv || settings.engine === 'vv' ? `VOICEVOX ${fmtNum(u.vv)}字（無料・Macで作る）<br>` : ''}料金の目安 ${fmtYen(y)}（上限 ${fmtNum(settings.budget)}円）`;
   const ratio = settings.budget ? y / settings.budget : 1;
   $('#usageFill').style.width = `${Math.min(100, ratio * 100)}%`;
   $('#usageMeter').classList.toggle('over', ratio >= 1);
@@ -3072,6 +3131,8 @@ function fillVoices() {
       for (const [name, [gender, feel]] of Object.entries(GEMINI_VOICES)) if (gender === g) group.append(new Option(`${name}（${feel}）`, name));
       sel.append(group);
     }
+  } else if (settings.engine === 'vv') {
+    for (const [id, name] of Object.entries(VV_VOICES)) sel.add(new Option(name, id));
   } else {
     for (const v of store.get('voices', VOICES.map((id) => ({ id, name: capitalize(id) })))) sel.add(new Option(v.name, v.id));
   }
@@ -3089,7 +3150,7 @@ async function loadVoices() {
   } catch {}
 }
 $('#voice').addEventListener('change', (e) => {
-  settings[settings.engine === 'gemini' ? 'geminiVoice' : 'voice'] = e.target.value;
+  settings[VOICE_SETTING[settings.engine] || 'voice'] = e.target.value;
   saveSettings();
   remakeAhead();
 });
@@ -3159,7 +3220,7 @@ $('#previewBtn').addEventListener('click', async () => {
 
 /* ---------- 履歴 ---------- */
 const fmtDate = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
-const voiceLabel = (p) => (p.engine === 'gemini' ? `Gemini・${p.voice}` : `Grok・${capitalize(p.voice)}`);
+const voiceLabel = (p) => (p.engine === 'gemini' ? `Gemini・${p.voice}` : p.engine === 'vv' ? `VOICEVOX・${VV_VOICES[p.voice] || p.voice}` : `Grok・${capitalize(p.voice)}`);
 function make(tag, cls, text) { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; }
 
 const rawCache = new Map();
@@ -3725,7 +3786,7 @@ async function queueText(text) {
 $('#queueBtn').addEventListener('click', async () => {
   const text = textEl.value;
   if (!text.trim()) { showNotice('順番待ちに入れる文章を貼り付けてください。'); return; }
-  if (!curKey()) { openSettings(`はじめに、${ENGINE_NAME[settings.engine]}のAPIキーを入れてください。`); return; }
+  if (!curKey()) { openSettings(needKeyMsg()); return; }
   primeKeep(); // タップの中で、音のない音を始めておく（作り始めるのは、このあと）
   const r = await queueText(text);
   if (!r) { showNotice('読み上げる文章がありません。'); return; }
@@ -3863,19 +3924,22 @@ async function macWaitKey(k, signal) {
 }
 // 設定の「Macで作る」の様子
 async function macPing() {
-  const el = $('#macState');
-  if (WORKER_MODE || !settings.macLink.trim()) { el.hidden = true; return; }
+  const el = $('#macState'), vvEl = $('#vvState');
+  const vvSay = (t) => { vvEl.hidden = !t; vvEl.textContent = t; };
+  if (WORKER_MODE || !settings.macLink.trim()) { el.hidden = true; vvSay(WORKER_MODE ? '' : 'まだ使えません：下の「Macで作る」に、Macの合言葉を入れてください'); return; }
   el.hidden = false;
-  if (!macParts()) { el.textContent = '合言葉の形が違います（https:// で始まり、# のあとに合言葉が続く形です）'; return; }
+  if (!macParts()) { el.textContent = '合言葉の形が違います（https:// で始まり、# のあとに合言葉が続く形です）'; vvSay('まだ使えません：Macの合言葉の形が違います'); return; }
   el.textContent = 'Macに確かめています…';
+  vvSay('Macに確かめています…');
   try {
     const res = await macFetch('/api/ping', {}, 15000);
-    if (res.status === 401) { el.textContent = '合言葉が違います'; return; }
+    if (res.status === 401) { el.textContent = '合言葉が違います'; vvSay('まだ使えません：Macの合言葉が違います'); return; }
     const p = await res.json();
+    vvSay(!p.vv ? 'Macの受け付け係が古いようです（VOICEVOXにまだ対応していません）' : p.vv === 'none' ? 'MacにVOICEVOXが見つかりません' : `使えます（MacのVOICEVOXは${p.vv === 'on' ? '起きています' : '休んでいます。頼むと数秒で起きます'}）`);
     const w = p.worker == null || p.worker === false ? '作る係はまだ動いていません' : p.worker >= 90 ? `作る係が止まっているようです（${Math.round(p.worker / 60)}分前から）` : p.ready === false ? '作る係は動いていますが、設定をまだ受け取れていません' : '作る係も動いています';
     el.textContent = `Macにつながりました。${w}。${p.jobs ? `Macにある話：${p.jobs}話。` : ''}${p.paused ? `Macで止まっています（${p.paused}）` : ''}`;
     if (settings.macOn) macSendConfig().catch(() => {});
-  } catch (e) { el.textContent = `Macにつながりません（${e.name === 'AbortError' ? '返事がない' : e.message}）`; }
+  } catch (e) { el.textContent = `Macにつながりません（${e.name === 'AbortError' ? '返事がない' : e.message}）`; vvSay('いまはMacにつながりません'); }
 }
 $('#macOn').addEventListener('change', (e) => { settings.macOn = e.target.checked; saveSettings(); macPing(); renderSaving(); });
 $('#macLink').addEventListener('change', (e) => { settings.macLink = e.target.value.trim(); saveSettings(); macPing(); });
