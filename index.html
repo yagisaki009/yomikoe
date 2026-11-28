@@ -535,7 +535,7 @@ input, select, textarea {
           </div>
           <p id="vvSubState" class="usage" hidden></p>
           <p id="vvMsg" class="msg" hidden></p>
-          <p class="hint">Geminiを使い切ったら、Macの中のVOICEVOXで続けます。料金も、1日の回数の上限もありません。下の「Macで作る」の合言葉を使います（「順番待ちの話は、Macに作ってもらう」がオフでも使えます）。Macにつながらないときだけ、その段落は次の声に移ります。VOICEVOXで作った段落は、Geminiが戻ったあとに、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。動画などで使うときだけ「VOICEVOX:冥鳴ひまり」と名前を書きます。</p>
+          <p class="hint">Geminiを使い切ったら、Macの中のVOICEVOXで続けます。料金も、1日の回数の上限もありません。下の「Macで作る」の合言葉を使います（「順番待ちの話は、Macに作ってもらう」がオフでも使えます）。Macにつながらないときも、ElevenLabsなどには移らず、つながるまで待ってVOICEVOXで作ります（ここをオフにしたときだけ、下の声を使います）。VOICEVOXで作った段落は、Geminiが戻ったあとに、読み上げ画面の「Geminiの声で作り直す」で置き換えられます。動画などで使うときだけ「VOICEVOX:冥鳴ひまり」と名前を書きます。</p>
         </div>
       </div>
       <div id="xaiPart" class="sub-part">
@@ -778,7 +778,7 @@ if (!store.get('msFirst', false)) { settings.subFirst = 'ms'; settings.msFallbac
 // 一度だけ。このあと設定の「先に使う声」で選び直したものは変えない
 if (!store.get('elFirst', false)) { settings.subFirst = 'el'; settings.elFallback = true; saveSettings(); store.set('elFirst', true); }
 // Geminiを使い切ったら、MacのVOICEVOX（冥鳴ひまり）で続ける（2026-11-27・本人の希望「gemini→ひまり」）。
-// Macにつながらないときだけ、その段落はElevenLabs→Microsoft→Grokへ。一度だけ。このあと選び直したものは変えない
+// 一度だけ。このあと選び直したものは変えない
 if (!store.get('vvFirst', false)) { settings.subFirst = 'vv'; settings.vvFallback = true; saveSettings(); store.set('vvFirst', true); }
 const VOICE_SETTING = { gemini: 'geminiVoice', xai: 'voice', vv: 'vvVoice' };
 const curVoice = () => settings[VOICE_SETTING[settings.engine] || 'voice'];
@@ -1567,7 +1567,8 @@ const SUBS = {
   vv: { name: 'VOICEVOX', free: 0, cost: '無料・Macで作る', ready: () => settings.vvFallback && !!macParts(), voice: () => VV_VOICES[settings.vvVoice] || settings.vvVoice, make: (t, sig) => requestVvSub(t, sig) },
 };
 // 先に使う声のあとは、無料のMicrosoft→有料のGrok→ElevenLabsの順（ElevenLabsが先頭なら ElevenLabs→Microsoft→Grok）。
-// 無料のVOICEVOX（Mac）は、先頭でなければ2番目。VOICEVOXが先頭なら、Macにつながらない段落は ElevenLabs→Microsoft→Grok（11/23の希望の順）
+// 無料のVOICEVOX（Mac）は、先頭でなければ2番目。VOICEVOXが使えるあいだは、その後ろの声には移らない（makeStandIn）。
+// VOICEVOXをオフにしたときは ElevenLabs→Microsoft→Grok（11/23の希望の順）
 const subOrder = () => {
   const f = settings.subFirst;
   return [f, ...(f === 'vv' ? ['el', 'ms', 'xai'] : ['vv', 'ms', 'xai', 'el']).filter((id) => id !== f)];
@@ -1666,6 +1667,9 @@ async function makeStandIn(text, signal, key, skip = [], why = '', main = 'gemin
       addUsage(id, -n);
       // 通信できないときや中止したときは、次の声でも同じなので、そのまま伝える
       if (e.name === 'AbortError' || e.kind === 'net') throw e;
+      // VOICEVOX（Mac）がうまくいかないときは、ElevenLabsなどの有料の声に移らず、そのまま伝える（あとでVOICEVOXでやり直す）。
+      // 2026-11-28・本人「Geminiが終わったあとイレブンラボを消費してしまう」。VOICEVOXをオフにしたときだけ、ほかの声を使う
+      if (id === 'vv') throw e;
       if (e.kind === 'temp') skip.push(id); // 一時的な不調は、その日の分をあきらめず、この段落だけ次の声へ
       else markSubOut(id, e.message);
       why = e.message;
@@ -1686,7 +1690,13 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
     const hit = await cacheGet(key);
     if (hit && hit.buf) return Object.assign(toBlob(hit.buf), { via: '保存してあった音声' });
     // Macに頼んである話の段落は、Macでできるのを待って受け取る（iPhoneで二重に作らない）
-    if (macOn() && macHasKey(key)) { const b = await macWaitKey(key, signal); if (b) return b; }
+    if (macOn() && macHasKey(key)) {
+      const b = await macWaitKey(key, signal);
+      if (b) return b;
+      // 待っているあいだに、順番待ちのほうが先に受け取って保存していたら、それを使う（2026-11-28。同じ段落をiPhoneでも作り直していた）
+      const late = await cacheGet(key);
+      if (late && late.buf) return Object.assign(toBlob(late.buf), { via: 'Macで作った声' });
+    }
     try { return await makeSpeech(text, signal, p, key); }
     catch (e) {
       // Geminiの枠が切れたとき、またはGrokが落ちたときは、予備の声で続ける
@@ -1706,11 +1716,14 @@ async function synth(text, signal, p = curProfile(), standIn = true) {
 function requestVv(text, voice, signal) {
   const m = macParts();
   const t = text.replace(/\[long-pause\]/g, '\n').replace(TAG_RE, '');
+  // Macは頼まれた順に1つずつ作る（iPhoneの分が先・作る係の分はあと）。並んで待つことがあるので、返事は10分まで待つ
+  // （2026-11-28。2分半で打ち切ってやり直していたら、Macの列が詰まり、作る係が予備のElevenLabsに移っていた）
+  const headers = { 'X-Yomikoe-Token': m.token, 'Content-Type': 'application/json' };
+  if (WORKER_MODE) headers['X-Yomikoe-From'] = 'worker';
   return fetchT(`${m.base}/api/vv`, {
-    method: 'POST', signal,
-    headers: { 'X-Yomikoe-Token': m.token, 'Content-Type': 'application/json' },
+    method: 'POST', signal, headers,
     body: JSON.stringify({ text: t, speaker: Number(voice) }),
-  }, 150000);
+  }, 600000);
 }
 // Macに頼んで、できたWAVを受け取る。sub：予備の声として使うとき（Macにつながらなければ、その段落だけ次の声へ移る）
 async function vvFetch(text, voice, signal, sub = false) {
